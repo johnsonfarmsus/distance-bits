@@ -1,0 +1,14 @@
+{
+  "name": "distance-bits",
+  "short_name": "distance-bits",
+  "description": "Phone-to-phone text over light",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
