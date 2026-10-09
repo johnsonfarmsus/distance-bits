@@ -9,6 +9,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../core/core.dart';
 import 'image_convert.dart';
+import 'received_screen.dart';
 import 'screen_exposure.dart';
 import 'theme.dart';
 
@@ -32,6 +33,10 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   int _lastUi = 0;
 
   String _status = 'Looking for a sender…';
+  String _hint = 'Point the camera at the sending phone’s screen.';
+  bool _finished = false;
+  bool _showDetails = false;
+  double? _foundAtMs;
   int _solved = 0, _total = 0;
   Payload? _result;
   String? _logPath;
@@ -65,24 +70,55 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
 
   void _newPipeline() {
     _pipe = RxPipeline(
-      onConfig: (c, s) => _status = 'Found a sender: ${_describe(c)}',
+      onConfig: (c, s) {
+        _foundAtMs ??= _clock.elapsedMilliseconds.toDouble();
+        _status = 'Sender found';
+        _hint = '${_describe(c)} · hold steady…';
+      },
       onHeader: (h) {
-        if (_result == null) _status = 'Receiving message (${h.length} bytes)…';
+        if (_result == null) {
+          _status = 'Receiving…';
+          _hint = 'Message is ${h.length} bytes. Keep holding steady.';
+        }
       },
       onProgress: (a, b, _) {
         _solved = a;
         _total = b;
       },
-      onCrcFail: (_, __) => _status = 'A bad read slipped through; starting that message over…',
+      onCrcFail: (_, __) => _hint = 'A bad read slipped through; starting that message over…',
       onDone: (p, bytes, h) {
         _result = p;
-        _status = 'Message received ✓';
-        HapticFeedback.heavyImpact();
-        _saveLog();
+        if (!_finished) {
+          _finished = true;
+          // Leave the camera callback before tearing the camera down.
+          Future.microtask(() => _finish(p, bytes.length));
+        }
       },
     );
     _result = null;
+    _finished = false;
+    _foundAtMs = null;
     _solved = _total = 0;
+  }
+
+  Future<void> _finish(Payload p, int nBytes) async {
+    HapticFeedback.heavyImpact();
+    final secs = _foundAtMs == null ? null : (_clock.elapsedMilliseconds - _foundAtMs!) / 1000;
+    final cfg = _pipe.receiver.config;
+    final details = [
+      if (secs != null) 'Received in ${secs.toStringAsFixed(0)} s',
+      if (cfg != null) _describe(cfg),
+      '$nBytes bytes',
+    ].join(' · ');
+    await _saveLog();
+    await _stopCamera();
+    if (!mounted) return;
+    await Navigator.of(context).pushReplacement(
+      PageRouteBuilder(
+        pageBuilder: (_, __, ___) => ReceivedScreen(payload: p, details: details),
+        transitionsBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: child),
+      ),
+    );
   }
 
   String _describe(Config c) {
@@ -139,7 +175,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   }
 
   void _onImage(CameraImage img) {
-    if (_busy) return; // drop a capture rather than queue them up
+    if (_busy || _finished) return; // drop a capture rather than queue them up
     _busy = true;
     try {
       final t = _clock.elapsedMicroseconds / 1000.0;
@@ -233,6 +269,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     setState(() {
       _newPipeline();
       _status = 'Looking for a sender…';
+      _hint = 'Point the camera at the sending phone’s screen.';
     });
   }
 
@@ -276,7 +313,11 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                   ? Container(height: 240, color: kCard, padding: const EdgeInsets.all(16), child: Center(child: Text(_error!, textAlign: TextAlign.center)))
                   : (cam == null || !cam.value.isInitialized)
                       ? Container(height: 240, color: kCard, child: const Center(child: CircularProgressIndicator()))
-                      : AspectRatio(
+                      : SizedBox(
+                          // Half the screen height, whole picture visible (the overlay maps 1:1).
+                          height: MediaQuery.of(context).size.height * 0.5,
+                          child: Center(
+                            child: AspectRatio(
                           aspectRatio: 1 / cam.value.aspectRatio,
                           child: Stack(fit: StackFit.expand, children: [
                             CameraPreview(cam),
@@ -286,43 +327,53 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                               Positioned(left: 8, top: 8, child: _Chip(icon: Icons.camera, text: _exposure!.label)),
                           ]),
                         ),
+                          ),
+                        ),
             ),
-            const SizedBox(height: 12),
-            Text(_status, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            LinearProgressIndicator(value: _total > 0 ? _solved / _total : 0, minHeight: 8, borderRadius: BorderRadius.circular(4)),
-            if (_result != null) ...[
-              const SizedBox(height: 12),
-              _ResultCard(_result!),
-            ],
-            const SizedBox(height: 12),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              _Stat('${_pipe.accepted}', 'frames read'),
-              _Stat('${s.headers}', 'headers'),
-              _Stat('${s.chunksAdded}', 'chunks ok'),
-              _Stat('${s.blocksBad}', 'bad blocks'),
-              _Stat('${s.lostFrames}', 'frames missed'),
-              _Stat(_capFps.toStringAsFixed(0), 'camera fps'),
+            const SizedBox(height: 14),
+            Row(children: [
+              if (_status == 'Looking for a sender…')
+                const Padding(padding: EdgeInsets.only(right: 10), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+              Text(_status, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
             ]),
-            if (_backs.length > 1) ...[
-              const SizedBox(height: 12),
-              const Text('LENS', style: TextStyle(color: kMuted, fontSize: 13, letterSpacing: 1.2)),
-              const SizedBox(height: 6),
-              Wrap(spacing: 8, children: [
-                for (var i = 0; i < _backs.length; i++)
-                  ChoiceChip(label: Text(_lensName(_backs[i], i)), selected: i == _lens, onSelected: (_) => _switchLens(i)),
-              ]),
-            ],
-            const SizedBox(height: 16),
-            Text(
-              'Point the camera at the sender so its screen is the brightest thing in view and fills a good part of '
-              'the yellow box. Hold steady. Further away, use the zoom lens if you have one.'
-              '${_logPath != null ? '\n\nLog saved to Files › On My iPhone › Distance Bits.' : ''}',
-              style: const TextStyle(color: kMuted, fontSize: 13, height: 1.4),
-            ),
+            const SizedBox(height: 4),
+            Text(_hint, style: const TextStyle(color: kMuted, fontSize: 15)),
+            const SizedBox(height: 12),
+            LinearProgressIndicator(value: _total > 0 ? _solved / _total : 0, minHeight: 10, borderRadius: BorderRadius.circular(5)),
             const SizedBox(height: 8),
-            const Text('The sender’s screen flashes rapidly. If you’re sensitive to flashing light, look at this screen instead.',
-                style: TextStyle(color: kMuted, fontSize: 13, height: 1.4)),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => setState(() => _showDetails = !_showDetails),
+                icon: Icon(_showDetails ? Icons.expand_less : Icons.expand_more),
+                label: const Text('Details'),
+              ),
+            ),
+            if (_showDetails) ...[
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                _Stat('${_pipe.accepted}', 'frames read'),
+                _Stat('${s.headers}', 'headers'),
+                _Stat('${s.chunksAdded}', 'chunks ok'),
+                _Stat('${s.blocksBad}', 'bad blocks'),
+                _Stat('${s.lostFrames}', 'frames missed'),
+                _Stat(_capFps.toStringAsFixed(0), 'camera fps'),
+              ]),
+              if (_backs.length > 1) ...[
+                const SizedBox(height: 12),
+                const Text('LENS', style: TextStyle(color: kMuted, fontSize: 13, letterSpacing: 1.2)),
+                const SizedBox(height: 6),
+                Wrap(spacing: 8, children: [
+                  for (var i = 0; i < _backs.length; i++)
+                    ChoiceChip(label: Text(_lensName(_backs[i], i)), selected: i == _lens, onSelected: (_) => _switchLens(i)),
+                ]),
+              ],
+            ],
+            const SizedBox(height: 12),
+            const Text(
+              'Tip: the sender’s screen should be the brightest thing in view. Further away, try the Zoom lens under Details. '
+              'The sender’s screen flashes rapidly; if you’re sensitive to flashing light, look at this screen instead.',
+              style: TextStyle(color: kMuted, fontSize: 13, height: 1.4),
+            ),
           ],
         ),
       ),
@@ -409,31 +460,4 @@ class _Stat extends StatelessWidget {
           Text(label, style: const TextStyle(color: kMuted, fontSize: 11)),
         ]),
       );
-}
-
-class _ResultCard extends StatelessWidget {
-  final Payload p;
-  const _ResultCard(this.p);
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(border: Border.all(color: kOk), borderRadius: BorderRadius.circular(14)),
-      child: switch (p.type) {
-        PayloadType.text => Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(child: SelectableText(p.text, style: const TextStyle(fontSize: 20))),
-            IconButton(
-              tooltip: 'Copy',
-              icon: const Icon(Icons.copy),
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: p.text));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied')));
-              },
-            ),
-          ]),
-        PayloadType.image => Image.memory(p.data),
-        PayloadType.file => Text('File: ${p.text} (${p.data.length} bytes)'),
-      },
-    );
-  }
 }
