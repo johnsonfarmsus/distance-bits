@@ -164,3 +164,108 @@ int? classifyCell(Rgb rgb, Calibration calib, {double blackFrac = 0.35, double w
 }
 
 List<int?> classifyCells(List<Rgb> samples, Calibration calib) => [for (final s in samples) classifyCell(s, calib)];
+
+/// Finds the transmitting screen by what makes it unique: its colours keep
+/// changing (red → green → blue → white …). Lamps and windows can be brighter,
+/// and mains-powered lights flicker in brightness, but their hue stays put.
+///
+/// For every pixel it remembers the chromaticity (r, g share of r+g+b) it last
+/// had while lit, and accumulates how much that hue changes between lit
+/// captures (dark captures, e.g. the black marker or Far's separators, are
+/// skipped). The screen is the largest connected patch of hue activity.
+class ScreenFinder {
+  int _w = 0, _h = 0, frames = 0;
+  late Float32List _lastR, _lastG, _act;
+  double _lastT = 0;
+
+  /// Max channel at or above which a pixel counts as lit.
+  int litLevel;
+
+  /// Smallest hue jump that counts as a colour switch. Real switches (R↔G, W↔B …)
+  /// are ≥ 1; lamp colour wobble and sensor noise stay well below.
+  double minJump;
+
+  /// Accumulated colour switches needed to count a pixel as part of the screen.
+  double activeLevel;
+
+  /// Activity fades with this time constant, so Far's slow symbols still register.
+  double tauMs;
+  ScreenFinder({this.litLevel = 70, this.minJump = 0.3, this.activeLevel = 0.5, this.tauMs = 500});
+
+  void reset() => _w = 0;
+
+  ScreenRect? find(RgbaImage img, double tMs, {int minArea = 4}) {
+    final w = img.width, h = img.height, n = w * h, d = img.data;
+    if (w != _w || h != _h) {
+      _w = w;
+      _h = h;
+      frames = 0;
+      _lastR = Float32List(n)..fillRange(0, n, -1);
+      _lastG = Float32List(n);
+      _act = Float32List(n);
+    }
+    frames++;
+    final dt = frames == 1 ? 0.0 : (tMs - _lastT).clamp(0.0, 1000.0);
+    _lastT = tMs;
+    final decay = math.exp(-dt / tauMs);
+    for (var i = 0; i < n; i++) {
+      final r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+      final m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+      var a = _act[i] * decay;
+      if (m >= litLevel) {
+        final s = (r + g + b).toDouble();
+        final cr = r / s, cg = g / s;
+        if (_lastR[i] >= 0) {
+          final jump = (cr - _lastR[i]).abs() + (cg - _lastG[i]).abs();
+          if (jump >= minJump) a += jump;
+        }
+        _lastR[i] = cr;
+        _lastG[i] = cg;
+      }
+      _act[i] = a;
+    }
+    if (frames < 3) return null;
+    // Connected components of active pixels; keep the one with the most activity.
+    final label = Int32List(n)..fillRange(0, n, -1);
+    final stack = <int>[];
+    ScreenRect? best;
+    var bestScore = 0.0;
+    var comp = 0;
+    for (var start = 0; start < n; start++) {
+      if (_act[start] < activeLevel || label[start] >= 0) continue;
+      var minX = w, minY = h, maxX = 0, maxY = 0, area = 0;
+      var score = 0.0;
+      stack.add(start);
+      label[start] = comp;
+      while (stack.isNotEmpty) {
+        final p = stack.removeLast();
+        final x = p % w, y = p ~/ w;
+        area++;
+        score += _act[p];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        // 8-connected: the black marker cell can split a screen's activity diagonally.
+        for (var dy = -1; dy <= 1; dy++) {
+          final yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (var dx = -1; dx <= 1; dx++) {
+            final xx = x + dx;
+            if (xx < 0 || xx >= w || (dx == 0 && dy == 0)) continue;
+            final q = yy * w + xx;
+            if (label[q] >= 0 || _act[q] < activeLevel) continue;
+            label[q] = comp;
+            stack.add(q);
+          }
+        }
+      }
+      if (area >= minArea && score > bestScore) {
+        bestScore = score;
+        best = ScreenRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
+      }
+      comp++;
+    }
+    return best;
+  }
+}

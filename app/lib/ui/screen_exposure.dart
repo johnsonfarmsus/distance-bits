@@ -18,6 +18,7 @@ class ScreenExposure {
   double iso = 200, dur = 1 / 1000;
   double _lastAdjust = -1e9;
   double _lastSeenScreen = 0;
+  int _sweep = 0;
 
   ScreenExposure(this.cameraId);
 
@@ -59,10 +60,15 @@ class ScreenExposure {
   void update(double? brightest, double tMs) {
     if (!available || tMs - _lastAdjust < 250) return;
     if (brightest == null) {
-      // Nothing found for a while: maybe too dark to see the screen; brighten in steps, then wrap around.
-      if (tMs - _lastSeenScreen > 1500) {
+      // No screen in view: step through a few moderate settings (a phone screen
+      // at 1/1000 s needs roughly ISO 100–800). Never climb to the maximum: that
+      // lights up the room and lamps until nothing stands out.
+      if (tMs - _lastSeenScreen > 1200) {
         _lastAdjust = tMs;
-        iso = iso * 2 > maxIso ? minIso * 2 : iso * 2;
+        _lastSeenScreen = tMs;
+        final steps = [for (var k = 2.0; k <= 32; k *= 2) (minIso * k).clamp(minIso, math.min(maxIso, 1000.0)).toDouble()];
+        _sweep = (_sweep + 1) % steps.length;
+        iso = steps[_sweep];
         _apply();
       }
       return;
@@ -84,7 +90,7 @@ class ScreenExposure {
       dur = math.max(minDur, dur * nIso / minIso);
       nIso = minIso;
     }
-    iso = nIso.clamp(minIso, maxIso);
+    iso = nIso.clamp(minIso, math.min(maxIso, 1600.0));
     _apply();
   }
 }

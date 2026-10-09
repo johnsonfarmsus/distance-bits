@@ -276,7 +276,10 @@ class _ChatScreenState extends State<ChatScreen> {
               controller: _composer,
               listening: _listening,
               estimate: estimate,
-              onListen: () => setState(() => _listening = !_listening),
+              onListen: () {
+                FocusScope.of(context).unfocus(); // the keyboard would cover the chat while listening
+                setState(() => _listening = !_listening);
+              },
               onSend: _send,
             ),
           ]),

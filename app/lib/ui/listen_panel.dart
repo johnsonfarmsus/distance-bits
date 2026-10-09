@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -36,9 +37,15 @@ class ListenPanel extends StatefulWidget {
 }
 
 class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
+  static const _native = MethodChannel('distance_bits/camera');
+
   CameraController? _cam;
   List<CameraDescription> _backs = [];
-  int _lens = 0;
+  int _lens = 0; // index into _backs of the running camera
+  int _wide = 0;
+  int? _tele;
+  double _teleFactor = 1; // how much the zoom lens magnifies relative to the main one
+  double _zoom = 1, _pinchBase = 1, _digitalMax = 1;
   String? _error;
 
   late RxPipeline _pipe;
@@ -98,10 +105,13 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
 
   Future<void> _startCamera() async {
     try {
-      final all = await availableCameras();
-      _backs = all.where((c) => c.lensDirection == CameraLensDirection.back).toList();
-      if (_backs.isEmpty) throw 'No rear camera found';
-      if (_lens >= _backs.length) _lens = 0;
+      if (_backs.isEmpty) {
+        final all = await availableCameras();
+        _backs = all.where((c) => c.lensDirection == CameraLensDirection.back).toList();
+        if (_backs.isEmpty) throw 'No rear camera found';
+        await _findLenses();
+        _lens = _wide;
+      }
       // 120 fps where supported: a phone screen redraws top to bottom over a whole
       // refresh, so with ~4 shots per transmitted frame two clean matching shots are the norm.
       CameraController make(int fps) => CameraController(
@@ -122,6 +132,8 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
       await cam.lockCaptureOrientation(DeviceOrientation.portraitUp).catchError((_) {});
       await cam.setFocusMode(FocusMode.auto).catchError((_) {});
       _cam = cam;
+      _digitalMax = await cam.getMaxZoomLevel().catchError((_) => 1.0);
+      await cam.setZoomLevel(_digitalZoom().clamp(1.0, _digitalMax)).catchError((_) {});
       _exposure = ScreenExposure(_backs[_lens].name);
       await _exposure!.start();
       await cam.startImageStream(_onImage);
@@ -215,11 +227,67 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  Future<void> _switchLens(int i) async {
-    await _stopCamera();
-    setState(() => _lens = i);
-    await _startCamera();
+  /// Which rear camera is the main lens and which is the zoom lens, and how much
+  /// the zoom lens magnifies (from the native field-of-view figures).
+  Future<void> _findLenses() async {
+    _wide = 0;
+    _tele = null;
+    try {
+      final list = (await _native.invokeMethod('lenses') as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+      double? wideFov, teleFov;
+      for (var i = 0; i < _backs.length; i++) {
+        final info = list.where((l) => l['id'] == _backs[i].name).firstOrNull;
+        if (info == null) continue;
+        if (info['kind'] == 'wide' && wideFov == null) {
+          _wide = i;
+          wideFov = (info['fov'] as num).toDouble();
+        } else if (info['kind'] == 'tele') {
+          _tele = i;
+          teleFov = (info['fov'] as num).toDouble();
+        }
+      }
+      if (_tele != null && wideFov != null && teleFov != null) {
+        double t(double deg) => math.tan(deg * math.pi / 360);
+        _teleFactor = t(wideFov) / t(teleFov);
+      } else {
+        _tele = null;
+      }
+    } catch (_) {
+      _tele = null; // not iOS / no native info: main lens + digital zoom only
+    }
   }
+
+  /// Quick-pick zoom steps: 1×, 2×, the zoom lens, and twice the zoom lens.
+  List<double> get _zoomStops {
+    final t = _tele == null ? null : _teleFactor;
+    final stops = <double>{1, 2, if (t != null) _round(t), if (t != null) _round(t * 2), if (t == null) 4};
+    return stops.toList()..sort();
+  }
+
+  double _round(double z) => (z * 2).round() / 2;
+
+  bool _wantsTele(double z) => _tele != null && z >= _teleFactor * 0.95;
+  double _digitalZoom() => _lens == _tele ? _zoom / _teleFactor : _zoom;
+
+  /// Total zoom [z]: past the zoom lens's magnification switch to it, then crop digitally.
+  /// (Cropping the sensor before it's scaled to 720p loses nothing up to ~3×.)
+  Future<void> _setZoom(double z, {bool allowLensSwitch = true}) async {
+    final maxTotal = _tele != null ? _teleFactor * 3 : 6.0;
+    _zoom = z.clamp(1.0, maxTotal);
+    final lens = _wantsTele(_zoom) ? _tele! : _wide;
+    _pipe.tracker.reset();
+    _pipe.finder.reset();
+    if (lens != _lens && allowLensSwitch) {
+      await _stopCamera();
+      setState(() => _lens = lens);
+      await _startCamera();
+      return;
+    }
+    await _cam?.setZoomLevel(_digitalZoom().clamp(1.0, _digitalMax)).catchError((_) {});
+    if (mounted) setState(() {});
+  }
+
+  String _zoomLabel(double z) => z == z.roundToDouble() ? '${z.round()}×' : '${z.toStringAsFixed(1)}×';
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -238,14 +306,6 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
     _stopCamera();
     WakelockPlus.disable();
     super.dispose();
-  }
-
-  String _lensName(CameraDescription d, int i) {
-    final n = d.name.toLowerCase();
-    if (n.contains('telephoto') || d.lensType == CameraLensType.telephoto) return 'Zoom';
-    if (n.contains('ultra') || d.lensType == CameraLensType.ultraWide) return 'Ultra wide';
-    if (d.lensType == CameraLensType.wide || i == 0) return 'Main';
-    return 'Camera ${i + 1}';
   }
 
   @override
@@ -268,16 +328,37 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
                       ? const SizedBox(width: 60, height: 60, child: Center(child: CircularProgressIndicator()))
                       : AspectRatio(
                           aspectRatio: 1 / cam.value.aspectRatio,
-                          child: Stack(fit: StackFit.expand, children: [
-                            CameraPreview(cam),
-                            CustomPaint(painter: _OverlayPainter(_rect, _imgW, _imgH)),
-                            Positioned(right: 4, top: 4, child: _CellsView(_cells)),
-                          ]),
+                          child: GestureDetector(
+                            onScaleStart: (_) => _pinchBase = _zoom,
+                            onScaleUpdate: (d) => _setZoom(_pinchBase * d.scale, allowLensSwitch: false),
+                            onScaleEnd: (_) => _setZoom(_zoom),
+                            child: Stack(fit: StackFit.expand, children: [
+                              CameraPreview(cam),
+                              CustomPaint(painter: _OverlayPainter(_rect, _imgW, _imgH)),
+                              Positioned(right: 4, top: 4, child: _CellsView(_cells)),
+                            ]),
+                          ),
                         ),
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          for (final z in _zoomStops)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 3),
+              child: ChoiceChip(
+                visualDensity: VisualDensity.compact,
+                showCheckmark: false,
+                label: Text(_zoomLabel(z)),
+                selected: (_zoom - z).abs() < 0.05,
+                onSelected: (_) => _setZoom(z),
+              ),
+            ),
+          if (!_zoomStops.any((z) => (_zoom - z).abs() < 0.05))
+            Padding(padding: const EdgeInsets.only(left: 6), child: Text(_zoomLabel(_round(_zoom)), style: const TextStyle(color: kAccent))),
+        ]),
+        const SizedBox(height: 4),
         Row(children: [
           if (_status == 'Looking for a sender…')
             const Padding(padding: EdgeInsets.only(right: 8), child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))),
@@ -298,16 +379,6 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
             'chunks ${s.chunksAdded} · bad blocks ${s.blocksBad} · missed ${s.lostFrames}',
             style: const TextStyle(color: kMuted, fontSize: 12),
           ),
-          if (_backs.length > 1)
-            Wrap(spacing: 6, children: [
-              for (var i = 0; i < _backs.length; i++)
-                ChoiceChip(
-                  visualDensity: VisualDensity.compact,
-                  label: Text(_lensName(_backs[i], i)),
-                  selected: i == _lens,
-                  onSelected: (_) => _switchLens(i),
-                ),
-            ]),
         ],
       ]),
     );

@@ -47,6 +47,16 @@ import UIKit
   /// that both clips the colours and blends consecutive frames together.
   static func handleCamera(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any] ?? [:]
+    if call.method == "lenses" {
+      // Rear lenses with their field of view, so the app can label zoom steps (1×, 3× …).
+      let types: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera, .builtInTelephotoCamera, .builtInUltraWideCamera]
+      let found = AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video, position: .back).devices
+      result(found.map { d -> [String: Any] in
+        let kind = d.deviceType == .builtInTelephotoCamera ? "tele" : (d.deviceType == .builtInUltraWideCamera ? "ultra" : "wide")
+        return ["id": d.uniqueID, "kind": kind, "fov": Double(d.activeFormat.videoFieldOfView)]
+      })
+      return
+    }
     guard let id = args["id"] as? String, let dev = AVCaptureDevice(uniqueID: id) else {
       result(FlutterError(code: "no_device", message: "camera not found", details: nil))
       return

@@ -21,6 +21,9 @@ class CaptureRecord {
 class RxPipeline {
   late final Receiver receiver;
   final RectTracker tracker = RectTracker();
+
+  /// Finds the screen by its changing colours (ignores lamps); see [ScreenFinder].
+  final ScreenFinder finder = ScreenFinder();
   final Calibrator calibrator = Calibrator();
   final FrameAcceptor acceptor;
   ScreenRect? lastRect;
@@ -65,7 +68,7 @@ class RxPipeline {
   /// screen rect found in [img]; otherwise they are read from [img] itself.
   CaptureRecord process(RgbaImage img, double t, {List<Rgb> Function(ScreenRect rect, int cols, int rows)? sampler}) {
     captures++;
-    final rect = tracker.update(findScreen(img), t);
+    final rect = tracker.update(finder.find(img, t), t);
     lastRect = rect;
     final rec = CaptureRecord(t, rect);
     final (cols, rows) = receiver.samplingGrid;

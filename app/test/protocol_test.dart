@@ -113,6 +113,49 @@ void main() {
     expect(r.bytes, r.payload);
   });
 
+  test('screen finder picks the colour-changing screen over a bigger, brighter, flickering lamp', () {
+    // Field test 8 Oct (hallway): ceiling lights outshine the phone, and the old
+    // "largest bright blob" locked onto them.
+    final cfg = defaultConfig(PresetName.near);
+    final tx = Transmitter(cfg, encodePayload(Payload.text('lamp test')), msgId: 3);
+    final finder = ScreenFinder();
+    final rng = Prng(7);
+    ScreenRect? found;
+    const w = 120, h = 160;
+    for (var i = 0; i < 40; i++) {
+      final f = tx.next();
+      final img = RgbaImage(Uint8List(w * h * 4), w, h);
+      for (var p = 0; p < w * h; p++) {
+        img.data[p * 4 + 3] = 255;
+      }
+      // Warm-white lamp, 50×20 px, brightness flickering 60–100 % with a little hue wobble.
+      final k = 0.6 + 0.4 * rng.next();
+      for (var y = 5; y < 25; y++) {
+        for (var x = 30; x < 80; x++) {
+          final o = (y * w + x) * 4;
+          img.data[o] = (255 * k).round();
+          img.data[o + 1] = (235 * k * (0.97 + 0.06 * rng.next())).round().clamp(0, 255);
+          img.data[o + 2] = (180 * k).round();
+        }
+      }
+      // The sender: 14×28 px, dimmer than the lamp, cells per the transmitted frame.
+      final cells = cellsFor(f, cfg);
+      for (var y = 0; y < 28; y++) {
+        for (var x = 0; x < 14; x++) {
+          final rgb = colorRgb[cells[(y * 4 ~/ 28) * 2 + (x * 2 ~/ 14)]];
+          final o = ((100 + y) * w + 50 + x) * 4;
+          img.data[o] = (((rgb >> 16) & 0xff) * 0.7).round();
+          img.data[o + 1] = (((rgb >> 8) & 0xff) * 0.7).round();
+          img.data[o + 2] = ((rgb & 0xff) * 0.7).round();
+        }
+      }
+      found = finder.find(img, i * 33.3);
+    }
+    expect(found, isNotNull);
+    expect(found!.y, greaterThanOrEqualTo(95), reason: 'found $found, expected the screen at 50,100 14x28');
+    expect(found.x, inInclusiveRange(45, 55));
+  });
+
   test('pixel pipeline decodes a rendered near frame stream', () {
     // Paint frames into a small synthetic camera image and run the full pipeline.
     final cfg = defaultConfig(PresetName.near);
