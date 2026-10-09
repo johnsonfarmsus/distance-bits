@@ -40,6 +40,15 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   int _imgW = 1, _imgH = 1;
   List<int?> _cells = const [];
 
+  // Diagnostics: capture rate, raw buffer shape, periodic log + snapshot saves.
+  double _capFps = 0, _procMs = 0;
+  double _lastCapT = -1;
+  String _bufInfo = '';
+  RgbaImage? _lastImg;
+  Timer? _diagTimer;
+  int _snapN = 0;
+  String? _sessionStamp;
+
   // Exposure: meter on the sender's screen, then lock so the camera stops chasing the flashes.
   int _seenFrames = 0;
   bool _locked = false, _locking = false;
@@ -51,6 +60,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     WakelockPlus.enable();
     _newPipeline();
     _startCamera();
+    _diagTimer = Timer.periodic(const Duration(seconds: 3), (_) => _saveDiagnostics());
   }
 
   void _newPipeline() {
@@ -120,10 +130,22 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     if (_busy) return; // drop a capture rather than queue them up
     _busy = true;
     try {
+      final t = _clock.elapsedMicroseconds / 1000.0;
+      if (_lastCapT >= 0) {
+        final dt = t - _lastCapT;
+        if (dt > 0) _capFps = _capFps == 0 ? 1000 / dt : _capFps * 0.95 + (1000 / dt) * 0.05;
+      }
+      _lastCapT = t;
       final rgba = toPortraitRgba(img, _backs[_lens].sensorOrientation);
       if (rgba == null) return;
-      final t = _clock.elapsedMicroseconds / 1000.0;
+      _bufInfo = '${img.width}×${img.height} rot ${_backs[_lens].sensorOrientation}';
+      _lastImg = rgba;
+      // Two agreeing captures per frame needs the camera at ~2× the sender's rate;
+      // when it can't keep up, accept on a single capture instead.
+      final txFps = _pipe.receiver.config?.fps ?? 30;
+      _pipe.acceptor.agree = _capFps >= txFps * 1.7 ? 2 : 1;
       _pipe.process(rgba, t);
+      _procMs = _procMs * 0.9 + ((_clock.elapsedMicroseconds / 1000.0) - t) * 0.1;
       _rect = _pipe.lastRect;
       _imgW = rgba.width;
       _imgH = rgba.height;
@@ -170,13 +192,36 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     });
   }
 
+  String _stamp() => DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+
+  /// One CSV per receive session, rewritten as it grows (so a crash or force-quit keeps it).
   Future<void> _saveLog() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final ts = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-      final f = File('${dir.path}/rx-log-$ts.csv');
+      _sessionStamp ??= _stamp();
+      final f = File('${dir.path}/rx-log-$_sessionStamp.csv');
       await f.writeAsString(_pipe.csv());
       _logPath = f.path;
+    } catch (_) {}
+  }
+
+  /// Every few seconds: save the log and what the camera currently sees (last 6 snapshots kept).
+  Future<void> _saveDiagnostics() async {
+    if (_cam == null) return;
+    await _saveLog();
+    final img = _lastImg;
+    if (img == null) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final r = _pipe.lastRect;
+      final name = 'snap-${_sessionStamp ?? _stamp()}-${(_snapN++ % 6)}.ppm';
+      await File('${dir.path}/$name').writeAsBytes(toPpm(img));
+      await File('${dir.path}/snap-info.txt').writeAsString(
+        'last=$name t=${_clock.elapsedMilliseconds} buf=$_bufInfo capFps=${_capFps.toStringAsFixed(1)} '
+        'procMs=${_procMs.toStringAsFixed(1)} agree=${_pipe.acceptor.agree} rect=$r cells=${_pipe.lastCells} '
+        'config=${_pipe.receiver.config} locked=$_locked accepted=${_pipe.accepted} headers=${_pipe.receiver.stats.headers}\n',
+        mode: FileMode.append,
+      );
     } catch (_) {}
   }
 
@@ -188,6 +233,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
 
   void _reset() {
     _saveLog();
+    _sessionStamp = null;
     setState(() {
       _newPipeline();
       _status = 'Looking for a sender…';
@@ -206,6 +252,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _diagTimer?.cancel();
     _saveLog();
     _stopCamera();
     WakelockPlus.disable();
@@ -259,6 +306,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
               _Stat('${s.chunksAdded}', 'chunks ok'),
               _Stat('${s.blocksBad}', 'bad blocks'),
               _Stat('${s.lostFrames}', 'frames missed'),
+              _Stat(_capFps.toStringAsFixed(0), 'camera fps'),
             ]),
             const SizedBox(height: 12),
             Row(children: [

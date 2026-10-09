@@ -10,7 +10,9 @@ import '../core/core.dart';
 /// vision code averages the middle of each cell anyway.
 RgbaImage? toPortraitRgba(CameraImage img, int sensorOrientation, {int targetWidth = 160}) {
   final w = img.width, h = img.height;
-  final rot = sensorOrientation % 360;
+  // Some platform versions deliver buffers already rotated to the locked capture
+  // orientation (portrait: taller than wide); only rotate a landscape buffer.
+  final rot = w > h ? sensorOrientation % 360 : 0;
   final portraitW = (rot == 90 || rot == 270) ? h : w;
   final portraitH = (rot == 90 || rot == 270) ? w : h;
   final step = (portraitW / targetWidth).round().clamp(1, 16);
@@ -59,4 +61,18 @@ RgbaImage? toPortraitRgba(CameraImage img, int sensorOrientation, {int targetWid
     return RgbaImage(out, ow, oh);
   }
   return null;
+}
+
+/// Binary PPM (P6) of an RGBA image: trivial to write, readable everywhere. For diagnostics.
+Uint8List toPpm(RgbaImage img) {
+  final header = 'P6\n${img.width} ${img.height}\n255\n'.codeUnits;
+  final out = Uint8List(header.length + img.width * img.height * 3);
+  out.setAll(0, header);
+  var o = header.length;
+  for (var i = 0; i < img.width * img.height; i++) {
+    out[o++] = img.data[i * 4];
+    out[o++] = img.data[i * 4 + 1];
+    out[o++] = img.data[i * 4 + 2];
+  }
+  return out;
 }
