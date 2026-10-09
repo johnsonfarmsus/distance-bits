@@ -202,13 +202,16 @@ class ScreenFinder {
 
   /// How long to keep looking where the screen was last seen switching colour.
   double holdMs;
-  ScreenFinder({this.litLevel = 70, this.minJump = 0.3, this.activeLevel = 0.5, this.tauMs = 500, this.holdMs = 4000});
+
+  /// Smallest box (in coarse pixels) accepted as a screen: about 3×6 at the
+  /// longest range a screen is readable.
+  int minScreenArea;
+  ScreenFinder({this.litLevel = 70, this.minJump = 0.3, this.activeLevel = 0.5, this.tauMs = 500, this.holdMs = 4000, this.minScreenArea = 12});
 
   void reset() {
     _w = 0;
     _seedBox = null;
     _region = null;
-    _regionPeak = 0;
   }
 
   /// The screen's box in this capture, or null (nothing lit where the screen
@@ -274,29 +277,43 @@ class ScreenFinder {
     return box;
   }
 
-  double _regionPeak = 0;
   double? _rejectSince;
+
+  /// Intersection over union of two boxes.
+  static double _overlap(ScreenRect a, ScreenRect b) {
+    final ix = math.max(0, math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x));
+    final iy = math.max(0, math.min(a.y + a.h, b.y + b.h) - math.max(a.y, b.y));
+    final inter = ix * iy;
+    return inter / (a.w * a.h + b.w * b.h - inter);
+  }
 
   /// Sanity checks against the last screen box, from field snapshots (8 Oct):
   /// when the screen is dark (Far separator) or gone, the brightest thing nearby
   /// is a wall or floor, and growing from it covers half the picture.
   ScreenRect? _accept((ScreenRect, int)? found, double tMs) {
     if (found == null) return null;
-    final (box, peak) = found;
+    final (box, _) = found;
+    // A speck is never the screen. (Field sequence, 8 Oct: during a black frame a
+    // single bright pixel on the phone's edge was taken as the screen, after which
+    // every real screen box looked 'too big' and was rejected for good.)
+    if (box.w * box.h < minScreenArea) return null;
     final last = _region;
     if (last != null) {
-      if (peak < _regionPeak * 0.6) return null; // far dimmer than the screen was: screen is dark now
+      // Same screen = overlaps where it was and is about the same size. (Not
+      // 'about as bright': exposure changes make the same screen 2–3× dimmer.)
       final ratio = (box.w * box.h) / math.max(1, last.w * last.h);
-      if (ratio > 2.5) {
+      if (_overlap(box, last) < 0.3 || ratio > 2.5 || ratio < 0.25) {
+        // Much bigger (a lit wall) or much smaller (a fragment, a glint) than the
+        // screen was. If that persists while the screen is switching colour, the
+        // screen really did change size; see find().
         _rejectSince ??= tMs;
-        return null; // something much bigger than the screen
+        return null;
       }
     } else if (box.x == 0 && box.y == 0 && box.w == _w && box.h == _h) {
       return null; // the whole picture is never a phone screen
     }
     _rejectSince = null;
     _region = box;
-    _regionPeak = peak.toDouble();
     return box;
   }
 

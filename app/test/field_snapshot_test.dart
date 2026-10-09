@@ -21,7 +21,7 @@ RgbaImage loadPpm(String path) {
     return String.fromCharCodes(b.sublist(start, pos));
   }
 
-  expect(token(), 'P6');
+  if (token() != 'P6') throw FormatException('not a binary PPM: $path');
   final w = int.parse(token()), h = int.parse(token());
   token(); // maxval
   pos++; // single whitespace before pixel data

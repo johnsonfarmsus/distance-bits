@@ -70,6 +70,12 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
   int _snapN = 0;
   String? _sessionStamp;
 
+  // Bursts of consecutive frames (every 10 s), so a session can be replayed through
+  // the real screen-finder/decoder code offline. Last 3 bursts kept.
+  final List<RgbaImage> _burst = [];
+  int _burstN = 0;
+  double _nextBurstAt = 2000;
+
   @override
   void initState() {
     super.initState();
@@ -171,6 +177,15 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
       final rgba = frame.coarse(240);
       _bufInfo = '${img.width}x${img.height} rot ${frame.rot} step $step';
       _lastImg = rgba;
+      if (t >= _nextBurstAt) {
+        _burst.add(rgba);
+        if (_burst.length >= 24) {
+          final frames = List.of(_burst);
+          _burst.clear();
+          _nextBurstAt = t + 10000;
+          _saveBurst(frames, t);
+        }
+      }
       final txFps = _pipe.receiver.config?.fps ?? 30;
       _pipe.acceptor.agree = _capFps >= txFps * 1.7 ? 2 : 1;
       _pipe.process(rgba, t, sampler: (r, cols, rows) => frame.sampleCells(ScreenRect(r.x * step, r.y * step, r.w * step, r.h * step), cols, rows));
@@ -224,6 +239,27 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
         'config=${_pipe.receiver.config} exposure=${_exposure?.label} accepted=${_pipe.accepted} headers=${_pipe.receiver.stats.headers}\n',
         mode: FileMode.append,
       );
+    } catch (_) {}
+  }
+
+  Future<void> _saveBurst(List<RgbaImage> frames, double t) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final stamp = _sessionStamp ?? _stamp();
+      final n = _burstN++;
+      for (var i = 0; i < frames.length; i++) {
+        await File('${dir.path}/burst-$stamp-$n-${i.toString().padLeft(2, '0')}.ppm').writeAsBytes(toPpm(frames[i]));
+      }
+      await File('${dir.path}/burst-info.txt').writeAsString(
+        'burst-$stamp-$n t=${t.round()} frames=${frames.length} capFps=${_capFps.toStringAsFixed(1)} rect=${_pipe.lastRect} '
+        'config=${_pipe.receiver.config} exposure=${_exposure?.label}\n',
+        mode: FileMode.append,
+      );
+      // Keep the last 3 bursts.
+      final old = dir.listSync().whereType<File>().where((f) => f.path.contains('burst-$stamp-${n - 3}-'));
+      for (final f in old) {
+        await f.delete();
+      }
     } catch (_) {}
   }
 
