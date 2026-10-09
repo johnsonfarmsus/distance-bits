@@ -66,7 +66,13 @@ class RxPipeline {
   /// Feed one small captured image (≈160–320 px wide). If [sampler] is given, cell
   /// colours are read through it (e.g. from a full-resolution buffer) using the
   /// screen rect found in [img]; otherwise they are read from [img] itself.
-  CaptureRecord process(RgbaImage img, double t, {List<Rgb> Function(ScreenRect rect, int cols, int rows)? sampler}) {
+  ///
+  /// [sampler] gets the central fraction of the box to read ([keep]): Far reads
+  /// only the middle half. A whole-screen colour can be read anywhere on the
+  /// screen, and the box is only good to a coarse pixel or so and trails a
+  /// moving screen (range simulation, 8 Oct run: below ~30 px wide, one column
+  /// of the 2×4 grid fell off the screen and every symbol read as mixed).
+  CaptureRecord process(RgbaImage img, double t, {List<Rgb> Function(ScreenRect rect, int cols, int rows, double keep)? sampler}) {
     captures++;
     final rect = tracker.update(finder.find(img, t), t);
     lastRect = rect;
@@ -74,7 +80,8 @@ class RxPipeline {
     final (cols, rows) = receiver.samplingGrid;
     List<int?> cells;
     if (rect != null) {
-      final samples = sampler != null ? sampler(rect, cols, rows) : sampleCells(img, rect, cols, rows);
+      final keep = receiver.config?.preset == PresetName.far ? farSampleKeep : 1.0;
+      final samples = sampler != null ? sampler(rect, cols, rows, keep) : sampleCells(img, keep == 1 ? rect : fullResRect(rect, 1, keep: keep), cols, rows);
       calibrator.update(samples);
       cells = classifyCells(samples, calibrator.calib);
       lastSamples = samples;
@@ -85,6 +92,7 @@ class RxPipeline {
     }
     lastCells = cells;
     rec.cells = cells;
+    acceptor.reduce = receiver.config?.preset == PresetName.far ? _farKey : null;
     final obs = acceptor.offer(cells, t);
     if (obs != null) {
       accepted++;
@@ -98,6 +106,14 @@ class RxPipeline {
       if (log.length > 20000) log.removeRange(0, 5000);
     }
     return rec;
+  }
+
+  /// Fraction of the box (each way) read in Far.
+  static const double farSampleKeep = 0.5;
+
+  static List<int?>? _farKey(List<int?> cells) {
+    final c = majorityColor(cells);
+    return c == null ? null : [c];
   }
 
   String csv() {

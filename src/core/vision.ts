@@ -109,6 +109,12 @@ export class RectTracker {
 }
 
 /** Average RGB of the central region of each grid cell inside rect (raster order). */
+/** The central `keep` fraction (each way) of a box. */
+export function centralRect(r: Rect, keep: number): Rect {
+  const w = Math.max(1, Math.round(r.w * keep)), h = Math.max(1, Math.round(r.h * keep));
+  return { x: Math.round(r.x + (r.w - w) / 2), y: Math.round(r.y + (r.h - h) / 2), w, h };
+}
+
 export function sampleCells(img: Image, rect: Rect, cols: number, rows: number, inset = 0.25): RGB[] {
   const out: RGB[] = [];
   const cw = rect.w / cols, ch = rect.h / rows;

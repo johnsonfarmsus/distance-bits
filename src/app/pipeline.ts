@@ -1,11 +1,13 @@
 import {
   Calibrator,
   FrameAcceptor,
+  farKey,
   Receiver,
   RectTracker,
   classifyCells,
   findScreen,
   sampleCells,
+  centralRect,
   type Color,
   type Config,
   type FrameLog,
@@ -86,7 +88,11 @@ export class RxPipeline {
     const rec: CaptureRecord = { t, rect, cells: null, accepted: false };
     if (rect) {
       const { cols, rows } = this.receiver.samplingGrid();
-      const samples = sampleCells(img, rect, cols, rows);
+      // Far reads the middle half of the box: the colour is the same anywhere on the
+      // screen, and the box is only good to a pixel or so (see app/lib/core/pipeline.dart).
+      const far = this.receiver.config?.preset === 'far';
+      const r = far ? centralRect(rect, 0.5) : rect;
+      const samples = sampleCells(img, r, cols, rows);
       this.calibrator.update(samples);
       let cells = classifyCells(samples, this.calibrator.calib);
       if (this.perturb) cells = this.perturb(cells);
@@ -94,6 +100,7 @@ export class RxPipeline {
       this.lastSamples = samples;
       this.lastCells = cells;
       rec.cells = cells;
+      this.acceptor.reduce = this.receiver.config?.preset === 'far' ? farKey : null;
       const obs = this.acceptor.offer(cells, t);
       if (obs) {
         this.accepted++;
@@ -108,6 +115,7 @@ export class RxPipeline {
       const { cols, rows } = this.receiver.samplingGrid();
       const cells = new Array<Color | null>(cols * rows).fill(0 as Color);
       rec.cells = cells;
+      this.acceptor.reduce = this.receiver.config?.preset === 'far' ? farKey : null;
       const obs = this.acceptor.offer(cells, t);
       if (obs) {
         this.accepted++;

@@ -19,6 +19,14 @@ class ScreenRect {
 
 typedef Rgb = (double, double, double);
 
+/// [r] (coarse pixels, [step] full-resolution pixels each) in full-resolution
+/// pixels, keeping only its central [keep] fraction each way.
+ScreenRect fullResRect(ScreenRect r, int step, {double keep = 1}) {
+  final w = r.w * step * keep, h = r.h * step * keep;
+  final cx = (r.x + r.w / 2) * step, cy = (r.y + r.h / 2) * step;
+  return ScreenRect((cx - w / 2).round(), (cy - h / 2).round(), math.max(1, w.round()), math.max(1, h.round()));
+}
+
 /// Find the transmitting screen: the largest bright connected blob (port of vision.ts).
 ScreenRect? findScreen(RgbaImage img, {int minArea = 12}) {
   final data = img.data, width = img.width, height = img.height;
@@ -253,11 +261,12 @@ class ScreenFinder {
       _seedT = tMs;
       // Rejected for a second while colour switching is clearly there: the screen
       // really did change size (walked closer / zoomed). Start over from it.
-      if (_rejectSince != null && tMs - _rejectSince! > 1000) {
+      final found = screenBoxAround(img, active);
+      if (_rejectSince != null && tMs - _rejectSince! > 1000 && found != null && _fills(found.$1, active)) {
         _region = null;
         _rejectSince = null;
       }
-      final box = _accept(screenBoxAround(img, active), tMs);
+      final box = _accept(found, tMs);
       if (box != null) _seedBox = box;
       return box;
     }
@@ -279,6 +288,26 @@ class ScreenFinder {
 
   double? _rejectSince;
 
+  /// A band across [region]: inside it, as wide (or as tall) as it, but clearly
+  /// shorter (narrower). A screen moving away shrinks both ways instead.
+  static bool _isBand(ScreenRect box, ScreenRect region) {
+    if (_inside(box, region) < 0.8) return false;
+    final fullW = box.w >= 0.85 * region.w, fullH = box.h >= 0.85 * region.h;
+    return (fullW && box.h < 0.85 * region.h) || (fullH && box.w < 0.85 * region.w);
+  }
+
+  /// Fraction of [a]'s area that lies inside [b].
+  static double _inside(ScreenRect a, ScreenRect b) {
+    final ix = math.max(0, math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x));
+    final iy = math.max(0, math.min(a.y + a.h, b.y + b.h) - math.max(a.y, b.y));
+    return ix * iy / math.max(1, a.w * a.h);
+  }
+
+  /// Whether a bright box is the whole colour-switching patch rather than a band
+  /// of it (a capture taken mid-refresh): starting over from a band would make
+  /// every later whole-screen box look 'too big'.
+  static bool _fills(ScreenRect box, ScreenRect active) => box.w * box.h * 2 >= active.w * active.h;
+
   /// Intersection over union of two boxes.
   static double _overlap(ScreenRect a, ScreenRect b) {
     final ix = math.max(0, math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x));
@@ -298,6 +327,13 @@ class ScreenFinder {
     // every real screen box looked 'too big' and was rejected for good.)
     if (box.w * box.h < minScreenArea) return null;
     final last = _region;
+    if (last != null && _isBand(box, last)) {
+      // Part of the screen we already have: the display was mid-refresh when the
+      // camera read it, so only a band of it was lit (field log 8 Oct 21:47: boxes
+      // like 71:210:73:69 inside 71:137:74:148). Keep the whole screen.
+      _rejectSince = null;
+      return last;
+    }
     if (last != null) {
       // Same screen = overlaps where it was and is about the same size. (Not
       // 'about as bright': exposure changes make the same screen 2–3× dimmer.)

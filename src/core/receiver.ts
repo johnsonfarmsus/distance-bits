@@ -508,15 +508,28 @@ export class FrameAcceptor {
   private prev: (Color | null)[] | null = null;
   private run = 0;
   private lastAccepted: (Color | null)[] | null = null;
+  /**
+   * What "identical" means: Far compares the screen's majority colour, not the
+   * raw samples (a box shift mid-symbol turned RRRRRRRR into KRRRRRRR and the
+   * same symbol was accepted twice; field log 8 Oct 21:47 at 2.29 s). Captures
+   * it can't reduce (null) are skipped.
+   */
+  reduce: ((cells: (Color | null)[]) => (Color | null)[] | null) | null = null;
   constructor(public agree = 2) {}
 
   offer(cells: (Color | null)[], t: number): Observation | null {
-    if (this.prev && sameCells(this.prev, cells)) this.run++;
+    const key = this.reduce ? this.reduce(cells) : cells;
+    if (!key) {
+      this.prev = null;
+      this.run = 0;
+      return null;
+    }
+    if (this.prev && sameCells(this.prev, key)) this.run++;
     else this.run = 1;
-    this.prev = cells;
+    this.prev = key;
     if (this.run < this.agree) return null;
-    if (this.lastAccepted && sameCells(this.lastAccepted, cells)) return null;
-    this.lastAccepted = cells;
+    if (this.lastAccepted && sameCells(this.lastAccepted, key)) return null;
+    this.lastAccepted = key;
     return { t, cells };
   }
 
@@ -525,6 +538,12 @@ export class FrameAcceptor {
     this.run = 0;
     this.lastAccepted = null;
   }
+}
+
+/** FrameAcceptor key for Far: the majority colour, or null when there is none. */
+export function farKey(cells: (Color | null)[]): (Color | null)[] | null {
+  const c = majorityColor(cells);
+  return c == null ? null : [c];
 }
 
 export function sameCells(a: (Color | null)[], b: (Color | null)[]): boolean {

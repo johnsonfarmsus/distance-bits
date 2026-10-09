@@ -492,25 +492,39 @@ class Receiver {
 
 /// Accept a frame when `agree` consecutive captures classify identically and differ
 /// from the last accepted frame (the marker moves every frame).
+///
+/// [reduce], when set, says what "identical" means: Far compares the screen's
+/// majority colour, not the eight raw samples. (Range simulation from the 8 Oct
+/// arm's-length run, and that run's own log at 2.29 s: while one colour was
+/// showing, the samples went RRRRRRRR → KRRRRRRR as the box shifted, and the
+/// unchanged symbol was accepted a second time, which shifts every later bit.)
+/// Captures it can't reduce (no clear majority) are skipped, not accepted.
 class FrameAcceptor {
   List<int?>? _prev;
   int _run = 0;
   List<int?>? _lastAccepted;
   int agree;
+  List<int?>? Function(List<int?> cells)? reduce;
   FrameAcceptor([this.agree = 2]);
 
   Observation? offer(List<int?> cells, double t) {
+    final key = reduce == null ? cells : reduce!(cells);
+    if (key == null) {
+      _prev = null;
+      _run = 0;
+      return null;
+    }
     final prev = _prev;
-    if (prev != null && sameCells(prev, cells)) {
+    if (prev != null && sameCells(prev, key)) {
       _run++;
     } else {
       _run = 1;
     }
-    _prev = cells;
+    _prev = key;
     if (_run < agree) return null;
     final last = _lastAccepted;
-    if (last != null && sameCells(last, cells)) return null;
-    _lastAccepted = cells;
+    if (last != null && sameCells(last, key)) return null;
+    _lastAccepted = key;
     return Observation(t, cells);
   }
 

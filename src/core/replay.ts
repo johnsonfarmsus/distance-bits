@@ -1,9 +1,9 @@
 // Replay a receiver CSV log (classified cells per capture) through FrameAcceptor + Receiver.
 import { readFileSync } from 'node:fs';
-import { FrameAcceptor, Receiver } from './receiver';
+import { FrameAcceptor, Receiver, farKey } from './receiver';
 import type { Color } from './colors';
 
-export function replay(path: string, opts: { agree?: number; verbose?: boolean } = {}) {
+export function replay(path: string, opts: { agree?: number; verbose?: boolean; rawAcceptor?: boolean } = {}) {
   const lines = readFileSync(path, 'utf8').trim().split('\n').slice(1);
   const events: string[] = [];
   let done: string | null = null;
@@ -20,6 +20,7 @@ export function replay(path: string, opts: { agree?: number; verbose?: boolean }
     const cells = f[2];
     if (!cells) continue;
     const cs = [...cells].map((c) => (c === '?' ? null : ('KWRGB'.indexOf(c) as Color)));
+    acc.reduce = !opts.rawAcceptor && rx.config?.preset === 'far' ? farKey : null;
     const obs = acc.offer(cs, t);
     if (obs) rx.observe(obs);
   }

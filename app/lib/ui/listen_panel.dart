@@ -188,7 +188,7 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
       }
       final txFps = _pipe.receiver.config?.fps ?? 30;
       _pipe.acceptor.agree = _capFps >= txFps * 1.7 ? 2 : 1;
-      _pipe.process(rgba, t, sampler: (r, cols, rows) => frame.sampleCells(ScreenRect(r.x * step, r.y * step, r.w * step, r.h * step), cols, rows));
+      _pipe.process(rgba, t, sampler: (r, cols, rows, keep) => frame.sampleCells(fullResRect(r, step, keep: keep), cols, rows));
       _procMs = _procMs * 0.9 + ((_clock.elapsedMicroseconds / 1000.0) - t) * 0.1;
       _rect = _pipe.lastRect;
       _imgW = rgba.width;
@@ -236,7 +236,7 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
       await File('${dir.path}/snap-info.txt').writeAsString(
         'last=$name t=${_clock.elapsedMilliseconds} buf=$_bufInfo capFps=${_capFps.toStringAsFixed(1)} '
         'procMs=${_procMs.toStringAsFixed(1)} agree=${_pipe.acceptor.agree} rect=${_pipe.lastRect} '
-        'config=${_pipe.receiver.config} exposure=${_exposure?.label} accepted=${_pipe.accepted} headers=${_pipe.receiver.stats.headers}\n',
+        'config=${_pipe.receiver.config} exposure=${_exposure?.label} zoom=${_zoom.toStringAsFixed(1)}x lens=$_lens accepted=${_pipe.accepted} headers=${_pipe.receiver.stats.headers}\n',
         mode: FileMode.append,
       );
     } catch (_) {}
@@ -252,7 +252,7 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
       }
       await File('${dir.path}/burst-info.txt').writeAsString(
         'burst-$stamp-$n t=${t.round()} frames=${frames.length} capFps=${_capFps.toStringAsFixed(1)} rect=${_pipe.lastRect} '
-        'config=${_pipe.receiver.config} exposure=${_exposure?.label}\n',
+        'config=${_pipe.receiver.config} exposure=${_exposure?.label} zoom=${_zoom.toStringAsFixed(1)}x lens=$_lens\n',
         mode: FileMode.append,
       );
       // Keep the last 3 bursts.
