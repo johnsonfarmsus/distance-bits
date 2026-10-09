@@ -161,6 +161,55 @@ void main() {
     expect(found.w, inInclusiveRange(12, 18), reason: '$found');
   });
 
+  test('screen finder holds the whole screen through a long run of one colour (Far, run of zeros)', () {
+    // Field log 8 Oct, Far: a run of identical symbols (all white) gave no colour
+    // switching for seconds; the box shrank to slivers and frames were thrown out.
+    final finder = ScreenFinder();
+    const w = 120, h = 160;
+    final white = colorRgb[Col.w], red = colorRgb[Col.r];
+    // Far at 15 fps: symbol, separator, symbol … ; a few switches, then 40 whites.
+    final symbols = [white, red, white, red, red, white, ...List.filled(40, white)];
+    var t = 0.0;
+    var sym = 0, litShotsLate = 0;
+    final lateBoxes = <ScreenRect>[];
+    for (final rgb in symbols) {
+      sym++;
+      for (final lit in [true, false]) {
+        // ~4 camera shots per transmitted frame
+        for (var shot = 0; shot < 4; shot++, t += 16.7) {
+          final img = RgbaImage(Uint8List(w * h * 4), w, h);
+          for (var p = 0; p < w * h; p++) {
+            img.data[p * 4] = 30;
+            img.data[p * 4 + 1] = 28;
+            img.data[p * 4 + 2] = 25;
+            img.data[p * 4 + 3] = 255;
+          }
+          if (lit) {
+            for (var y = 50; y < 110; y++) {
+              for (var x = 40; x < 70; x++) {
+                final o = (y * w + x) * 4;
+                img.data[o] = (rgb >> 16) & 0xff;
+                img.data[o + 1] = (rgb >> 8) & 0xff;
+                img.data[o + 2] = rgb & 0xff;
+              }
+            }
+          }
+          final b = finder.find(img, t);
+          // The last 20 white symbols: 2.7 s after the last colour switch.
+          if (lit && sym > symbols.length - 20) {
+            litShotsLate++;
+            if (b != null) lateBoxes.add(b);
+          }
+        }
+      }
+    }
+    // Every lit capture deep in the white run still finds the whole 30×60 screen.
+    expect(lateBoxes.length, litShotsLate);
+    for (final b in lateBoxes) {
+      expect((b.x, b.y, b.w, b.h), (40, 50, 30, 60));
+    }
+  });
+
   test('screen finder picks the colour-changing screen over a bigger, brighter, flickering lamp', () {
     // Field test 8 Oct (hallway): ceiling lights outshine the phone, and the old
     // "largest bright blob" locked onto them.

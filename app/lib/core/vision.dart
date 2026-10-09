@@ -178,6 +178,15 @@ class ScreenFinder {
   late Float32List _lastR, _lastG, _act;
   double _lastT = 0;
 
+  /// Where colour switching was last seen, and when: the screen is looked for
+  /// there even through long runs of one colour (Far sending a run of zeros
+  /// shows the same colour for seconds, and switching activity fades).
+  ScreenRect? _seedBox;
+  double _seedT = -1e9;
+
+  /// The last whole-screen box found (bright region), for size sanity checks.
+  ScreenRect? _region;
+
   /// Max channel at or above which a pixel counts as lit.
   int litLevel;
 
@@ -188,12 +197,22 @@ class ScreenFinder {
   /// Accumulated colour switches needed to count a pixel as part of the screen.
   double activeLevel;
 
-  /// Activity fades with this time constant, so Far's slow symbols still register.
+  /// Activity fades with this time constant.
   double tauMs;
-  ScreenFinder({this.litLevel = 70, this.minJump = 0.3, this.activeLevel = 0.5, this.tauMs = 500});
 
-  void reset() => _w = 0;
+  /// How long to keep looking where the screen was last seen switching colour.
+  double holdMs;
+  ScreenFinder({this.litLevel = 70, this.minJump = 0.3, this.activeLevel = 0.5, this.tauMs = 500, this.holdMs = 4000});
 
+  void reset() {
+    _w = 0;
+    _seedBox = null;
+    _region = null;
+    _regionPeak = 0;
+  }
+
+  /// The screen's box in this capture, or null (nothing lit where the screen
+  /// is, e.g. a black separator; or no screen seen yet).
   ScreenRect? find(RgbaImage img, double tMs, {int minArea = 4}) {
     final w = img.width, h = img.height, n = w * h, d = img.data;
     if (w != _w || h != _h) {
@@ -225,7 +244,65 @@ class ScreenFinder {
       _act[i] = a;
     }
     if (frames < 3) return null;
-    // Connected components of active pixels; keep the one with the most activity.
+    final active = _mostActive(w, h, minArea);
+    if (active != null) {
+      _seedBox = _region ?? active;
+      _seedT = tMs;
+      // Rejected for a second while colour switching is clearly there: the screen
+      // really did change size (walked closer / zoomed). Start over from it.
+      if (_rejectSince != null && tMs - _rejectSince! > 1000) {
+        _region = null;
+        _rejectSince = null;
+      }
+      final box = _accept(screenBoxAround(img, active), tMs);
+      if (box != null) _seedBox = box;
+      return box;
+    }
+    final seed = _seedBox;
+    if (seed == null || tMs - _seedT > holdMs) {
+      _seedBox = _region = null;
+      return null;
+    }
+    // No colour switching right now, but the screen may still be there showing a
+    // run of one colour (Far sending zeros): keep following it while it passes
+    // the same checks (it may drift in the hand).
+    final box = _accept(screenBoxAround(img, seed), tMs);
+    if (box != null) {
+      _seedBox = box;
+      _seedT = tMs;
+    }
+    return box;
+  }
+
+  double _regionPeak = 0;
+  double? _rejectSince;
+
+  /// Sanity checks against the last screen box, from field snapshots (8 Oct):
+  /// when the screen is dark (Far separator) or gone, the brightest thing nearby
+  /// is a wall or floor, and growing from it covers half the picture.
+  ScreenRect? _accept((ScreenRect, int)? found, double tMs) {
+    if (found == null) return null;
+    final (box, peak) = found;
+    final last = _region;
+    if (last != null) {
+      if (peak < _regionPeak * 0.6) return null; // far dimmer than the screen was: screen is dark now
+      final ratio = (box.w * box.h) / math.max(1, last.w * last.h);
+      if (ratio > 2.5) {
+        _rejectSince ??= tMs;
+        return null; // something much bigger than the screen
+      }
+    } else if (box.x == 0 && box.y == 0 && box.w == _w && box.h == _h) {
+      return null; // the whole picture is never a phone screen
+    }
+    _rejectSince = null;
+    _region = box;
+    _regionPeak = peak.toDouble();
+    return box;
+  }
+
+  /// Bounding box of the connected patch of colour-switching pixels with the most activity.
+  ScreenRect? _mostActive(int w, int h, int minArea) {
+    final n = w * h;
     final label = Int32List(n)..fillRange(0, n, -1);
     final stack = <int>[];
     ScreenRect? best;
@@ -266,42 +343,62 @@ class ScreenFinder {
       }
       comp++;
     }
-    return best == null ? null : _brightCore(img, best);
+    return best;
   }
 
-  /// The colour-switching patch also covers whatever the screen lights up (a hand,
-  /// a face, a wall), which switches colour in step with it. The screen itself is
-  /// far brighter than any of that, so keep the box around pixels at least half
-  /// as bright as the brightest one. A dark capture (Far's separator, a black
-  /// frame) gives no answer, and the caller keeps the last box.
-  ScreenRect? _brightCore(RgbaImage img, ScreenRect r) {
-    final d = img.data, w = img.width;
-    final x0 = math.max(0, r.x - 1), y0 = math.max(0, r.y - 1);
-    final x1 = math.min(w - 1, r.x + r.w), y1 = math.min(img.height - 1, r.y + r.h);
-    var peak = 0;
-    for (var y = y0; y <= y1; y++) {
-      for (var x = x0; x <= x1; x++) {
-        final i = (y * w + x) * 4;
-        final m = math.max(d[i], math.max(d[i + 1], d[i + 2]));
-        if (m > peak) peak = m;
-      }
+  /// The screen is the brightest thing where the colour switching is: start at
+  /// the brightest pixel in [seed] and grow over connected pixels nearly as
+  /// bright: at least 60 % of that peak and no more than 90 levels below it.
+  /// (Field snapshots: screen ~235–250, a lit tiled wall up to ~140 when the
+  /// camera ran hot; a plain "half as bright" cut let the wall in.) Gives the
+  /// whole lit screen even when only part of it was switching colour, and stops
+  /// at the dark bezel. Returns null if nothing at [seed] is lit.
+  (ScreenRect, int)? screenBoxAround(RgbaImage img, ScreenRect seed) {
+    final d = img.data, w = img.width, h = img.height;
+    int mAt(int p) {
+      final i = p * 4;
+      final r = d[i], g = d[i + 1], b = d[i + 2];
+      return r > g ? (r > b ? r : b) : (g > b ? g : b);
     }
-    if (peak < litLevel) return null;
-    final cut = peak ~/ 2;
-    var minX = x1, minY = y1, maxX = x0, maxY = y0, n = 0;
+
+    final x0 = math.max(0, seed.x - 1), y0 = math.max(0, seed.y - 1);
+    final x1 = math.min(w - 1, seed.x + seed.w), y1 = math.min(h - 1, seed.y + seed.h);
+    var peak = 0, start = -1;
     for (var y = y0; y <= y1; y++) {
       for (var x = x0; x <= x1; x++) {
-        final i = (y * w + x) * 4;
-        if (math.max(d[i], math.max(d[i + 1], d[i + 2])) >= cut) {
-          n++;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
+        final m = mAt(y * w + x);
+        if (m > peak) {
+          peak = m;
+          start = y * w + x;
         }
       }
     }
-    if (n == 0) return null;
-    return ScreenRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
+    if (peak < litLevel || start < 0) return null;
+    final cut = math.max((peak * 0.6).round(), peak - 90);
+    final seen = Uint8List(w * h);
+    final stack = <int>[start];
+    seen[start] = 1;
+    var minX = w, minY = h, maxX = 0, maxY = 0;
+    while (stack.isNotEmpty) {
+      final p = stack.removeLast();
+      final x = p % w, y = p ~/ w;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      for (var dy = -1; dy <= 1; dy++) {
+        final yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (var dx = -1; dx <= 1; dx++) {
+          final xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          final q = yy * w + xx;
+          if (seen[q] != 0 || mAt(q) < cut) continue;
+          seen[q] = 1;
+          stack.add(q);
+        }
+      }
+    }
+    return (ScreenRect(minX, minY, maxX - minX + 1, maxY - minY + 1), peak);
   }
 }
