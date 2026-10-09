@@ -18,6 +18,7 @@ List<int> cellsFor(Frame f, Config cfg) {
   int maxFrames = 20000,
   double jitterMs = 0,
   double colourErr = 0,
+  bool dropBeacons = false,
 }) {
   final payload = encodePayload(Payload.text(text));
   final tx = Transmitter(cfg, payload, msgId: 123);
@@ -32,6 +33,7 @@ List<int> cellsFor(Frame f, Config cfg) {
     frames++;
     if (i < skip) continue;
     if (loss > 0 && rng.next() < loss) continue;
+    if (dropBeacons && f.segment == Segment.beacon) continue;
     var cells = cellsFor(f, cfg);
     if (colourErr > 0 && f.segment != Segment.beacon) {
       cells = [
@@ -74,6 +76,16 @@ void main() {
     final r = run(defaultConfig(PresetName.far), 'ok?', loss: 0.1, seed: 8, jitterMs: 10);
     expect(r.bytes, r.payload);
   });
+
+  for (final preset in [PresetName.near, PresetName.mid]) {
+    test('${preset.name}: no beacon, 25% frame loss: auto-config holds and decodes', () {
+      // Field log 8 Oct: missed frames made the fps guess flip to 10, and every flip
+      // reset the stream. Auto-detect alone must now cope with heavy loss.
+      final r = run(defaultConfig(preset), 'hello from distance bits', loss: 0.25, seed: 4, jitterMs: 6, dropBeacons: true, maxFrames: 60000);
+      expect(r.bytes, r.payload);
+      expect(r.rx.config, defaultConfig(preset));
+    });
+  }
 
   test('joining mid-stream without config waits for the next beacon', () {
     final r = run(defaultConfig(PresetName.near).copyWith(palette: PaletteName.rgw), text, skip: 100);

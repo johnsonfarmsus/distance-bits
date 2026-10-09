@@ -113,6 +113,11 @@ export class Receiver {
   configSource: ConfigSource | null = null;
   private autoWindow: { t: number; kind: PresetName | null }[] = [];
   private colorHistory: number[] = [];
+  /**
+   * A header decoded under the current config: preset and palette are proven, so
+   * auto-detection stops second-guessing them (it may still refine fps).
+   */
+  private confirmed = false;
 
   constructor(private events: ReceiverEvents = {}, manualConfig?: Config) {
     if (manualConfig) this.setConfig(manualConfig, 'manual');
@@ -130,6 +135,7 @@ export class Receiver {
   setConfig(cfg: Config, source: ConfigSource): void {
     this.config = cfg;
     this.configSource = source;
+    this.confirmed = false;
     this.resetStream();
     this.events.onConfig?.(cfg, source);
   }
@@ -222,20 +228,28 @@ export class Receiver {
     else if (green >= COLOR_MIN) palette = palette === 'rgbw' && this.colorHistory.length < COLOR_WINDOW ? 'rgbw' : 'rgw';
     else if (this.colorHistory.length >= COLOR_WINDOW) palette = 'wr';
 
-    // Frame rate: the most common candidate period among recent accepted-frame gaps.
-    // (Flicker makes some gaps short, losses make some long; the mode is robust to both.)
-    const tally = new Map<Fps, number>();
+    // Frame rate from accepted-frame spacing. Missed frames only ever make gaps
+    // longer, so use the lower quartile, not the mode: one clean consecutive pair
+    // in four is enough.
+    const dts: number[] = [];
     for (let i = 1; i < this.autoWindow.length; i++) {
       const dt = this.autoWindow[i].t - this.autoWindow[i - 1].t;
-      const f = FPS_VALUES.reduce((best, c) => (Math.abs(1000 / c - dt) < Math.abs(1000 / best - dt) ? c : best), FPS_VALUES[0]);
-      tally.set(f, (tally.get(f) ?? 0) + 1);
+      if (dt > 0) dts.push(dt);
     }
+    dts.sort((a, b) => a - b);
     let fps = cur?.fps ?? FPS_VALUES[0];
-    let bestN = -1;
-    for (const [f, n] of tally) if (n > bestN) { bestN = n; fps = f; }
+    if (dts.length >= 4) {
+      const dt = dts[dts.length >> 2];
+      fps = FPS_VALUES.reduce((best, c) => (Math.abs(1000 / c - dt) < Math.abs(1000 / best - dt) ? c : best), FPS_VALUES[0]);
+    }
 
     const cfg: Config = { preset, palette, fps };
     if (cur && cur.preset === cfg.preset && cur.palette === cfg.palette && cur.fps === cfg.fps) return;
+    // An fps-only change re-times frame counting; it doesn't invalidate symbols already read.
+    if (cur && (this.confirmed || (cur.preset === cfg.preset && cur.palette === cfg.palette))) {
+      if (cur.fps !== fps) this.config = { ...cur, fps };
+      return;
+    }
     // Changing preset needs a decisive vote; palette/fps changes go through as soon as they're stable.
     if (cur && cur.preset !== cfg.preset && n < AUTO_WINDOW - 2) return;
     this.setConfig(cfg, 'auto');
@@ -440,6 +454,7 @@ export class Receiver {
 
   private onHeader(h: Header): void {
     this.stats.headers++;
+    this.confirmed = true;
     if (!this.decoder || !this.header || this.header.msgId !== h.msgId || this.header.length !== h.length) {
       this.decoder = new LTDecoder(h.length, h.msgId);
       this.done = false;

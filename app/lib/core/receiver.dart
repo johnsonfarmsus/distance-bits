@@ -102,6 +102,10 @@ class Receiver {
   List<int> _headerSyms = [];
   int _copiesLeft = 0;
   final List<(double, PresetName?)> _autoWin = [];
+
+  /// A header decoded under the current config: preset and palette are proven,
+  /// so auto-detection stops second-guessing them (it may still refine fps).
+  bool _confirmed = false;
   final List<int> _colorHistory = [];
 
   Receiver({this.events = const ReceiverEvents(), Config? manualConfig}) {
@@ -114,6 +118,7 @@ class Receiver {
   void setConfig(Config cfg, ConfigSource source) {
     config = cfg;
     configSource = source;
+    _confirmed = false;
     _searching = true;
     _buf = [];
     _lastSeq = null;
@@ -210,26 +215,29 @@ class Receiver {
       palette = PaletteName.wr;
     }
 
-    final tally = <int, int>{};
-    for (var i = 1; i < _autoWin.length; i++) {
-      final dt = _autoWin[i].$1 - _autoWin[i - 1].$1;
-      var f = fpsValues[0];
-      for (final c in fpsValues) {
-        if ((1000 / c - dt).abs() < (1000 / f - dt).abs()) f = c;
-      }
-      tally[f] = (tally[f] ?? 0) + 1;
-    }
+    // Frame rate from accepted-frame spacing. Missed frames only ever make gaps
+    // longer, so use the lower quartile, not the mode: one clean consecutive pair
+    // in four is enough.
+    final dts = <double>[
+      for (var i = 1; i < _autoWin.length; i++)
+        if (_autoWin[i].$1 - _autoWin[i - 1].$1 > 0) _autoWin[i].$1 - _autoWin[i - 1].$1,
+    ]..sort();
     var fps = cur?.fps ?? fpsValues[0];
-    var bestN = -1;
-    for (final e in tally.entries) {
-      if (e.value > bestN) {
-        bestN = e.value;
-        fps = e.key;
+    if (dts.length >= 4) {
+      final dt = dts[dts.length ~/ 4];
+      fps = fpsValues[0];
+      for (final c in fpsValues) {
+        if ((1000 / c - dt).abs() < (1000 / fps - dt).abs()) fps = c;
       }
     }
 
     final cfg = Config(preset, palette, fps);
     if (cur == cfg) return;
+    // An fps-only change re-times frame counting; it doesn't invalidate symbols already read.
+    if (cur != null && (_confirmed || (cur.preset == cfg.preset && cur.palette == cfg.palette))) {
+      if (cur.fps != fps) config = cur.copyWith(fps: fps);
+      return;
+    }
     if (cur != null && cur.preset != cfg.preset && n < _autoWindow - 2) return;
     setConfig(cfg, ConfigSource.auto);
   }
@@ -434,6 +442,7 @@ class Receiver {
 
   void _onHeader(Header h) {
     stats.headers++;
+    _confirmed = true;
     final cur = header;
     if (decoder == null || cur == null || cur.msgId != h.msgId || cur.length != h.length) {
       decoder = LTDecoder(h.length, h.msgId);

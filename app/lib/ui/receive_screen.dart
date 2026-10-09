@@ -97,14 +97,24 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       _backs = all.where((c) => c.lensDirection == CameraLensDirection.back).toList();
       if (_backs.isEmpty) throw 'No rear camera found';
       if (_lens >= _backs.length) _lens = 0;
-      final cam = CameraController(
-        _backs[_lens],
-        ResolutionPreset.high, // 720p: enough pixels for range while keeping 60 fps streaming affordable
-        enableAudio: false,
-        fps: 60,
-        imageFormatGroup: Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
-      );
-      await cam.initialize();
+      // 120 fps where the phone supports it: a phone screen redraws top to bottom
+      // over a whole refresh, so a fast shutter often catches it half-updated; with
+      // ~4 shots per transmitted frame, two clean matching shots are the norm.
+      CameraController make(int fps) => CameraController(
+            _backs[_lens],
+            ResolutionPreset.high, // 720p: enough pixels for range, light enough to stream fast
+            enableAudio: false,
+            fps: fps,
+            imageFormatGroup: Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+          );
+      var cam = make(120);
+      try {
+        await cam.initialize();
+      } catch (_) {
+        await cam.dispose();
+        cam = make(60);
+        await cam.initialize();
+      }
       await cam.lockCaptureOrientation(DeviceOrientation.portraitUp).catchError((_) {});
       _cam = cam;
       await cam.setFocusMode(FocusMode.auto).catchError((_) {});

@@ -23,6 +23,7 @@ interface RunOpts {
   jitterMs?: number;
   /** Rewrite a frame's cells before the receiver sees it (simulates misread colours). */
   corrupt?: (f: Frame, cells: Color[]) => Color[];
+  dropBeacons?: boolean;
 }
 
 function run(cfg: Config, text: string, o: RunOpts = {}) {
@@ -39,6 +40,7 @@ function run(cfg: Config, text: string, o: RunOpts = {}) {
     frames++;
     if (i < (o.skipFrames ?? 0)) continue;
     if (o.loss && rng.next() < o.loss) continue;
+    if (o.dropBeacons && f.segment === 'beacon') continue;
     const t = f.seq * period + (o.jitterMs ? (rng.next() * 2 - 1) * o.jitterMs : 0);
     const cells = cellsFor(f, cfg);
     rx.observe({ t, cells: o.corrupt ? o.corrupt(f, cells) : cells });
@@ -79,6 +81,17 @@ describe('end to end', () => {
     const r = run(cfg, 'ok?', { loss: 0.1, seed: 8, jitterMs: 10 });
     expect(r.doneBytes).toEqual(r.payload);
   });
+
+  for (const preset of ['near', 'mid'] as const) {
+    it(`${preset}: no beacon, 25% frame loss: auto-config holds and decodes`, () => {
+      // Field log 8 Oct: missed frames made the fps guess flip to 10, and every flip
+      // reset the stream. Auto-detect alone must now cope with heavy loss.
+      const cfg = defaultConfig(preset);
+      const r = run(cfg, 'hello from distance bits', { loss: 0.25, seed: 4, jitterMs: 6, dropBeacons: true, maxFrames: 60000 });
+      expect(r.doneBytes).toEqual(r.payload);
+      expect(r.rx.config).toEqual(cfg);
+    });
+  }
 
   it('receiver joining mid-stream with manual config still decodes', () => {
     const cfg = defaultConfig('near');
