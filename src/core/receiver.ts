@@ -1,10 +1,9 @@
 import { Color } from './colors';
 import type { Config, Fps, PaletteName, PresetName } from './config';
-import { EPOCH_BITS, EPOCH_CHUNKS, FPS_VALUES, GROUP_SYMBOLS, PALETTES, PRESETS, framePeriodMs, symbolOf } from './config';
+import { FPS_VALUES, blockBits, GROUP_SYMBOLS, PALETTES, PRESETS, framePeriodMs, symbolOf } from './config';
 import { LTDecoder } from './fountain';
-import { BEACON_BITS, HEADER_BITS, decodeBeacon, decodeHeader, encodeHeader, type Header } from './framing';
+import { BEACON_BITS, HEADER_BITS, decodeBeacon, decodeBlock, decodeHeader, encodeHeader, type Header } from './framing';
 import { bitsToSymbols, groupsFor, symbolsToBits } from './packing';
-import { bitsToBytes } from './bits';
 import { decodePayload, type Payload } from './payload';
 
 /** One accepted camera frame, already reduced to per-cell colors (null = unclassifiable). */
@@ -45,6 +44,10 @@ export interface ReceiverStats {
   chunksAdded: number;
   chunksUnknown: number;
   beacons: number;
+  /** Blocks dropped because a symbol was missing. */
+  blocksLost: number;
+  /** Blocks dropped because their CRC-8 failed (misread colours). */
+  blocksBad: number;
   crcFailures: number;
 }
 
@@ -81,7 +84,8 @@ export function detectStructure(cells: (Color | null)[], uniform: Color | undefi
  * Consumes accepted frames and drives the fountain decoder.
  *
  * search : looking for a header at the end of the symbol buffer (any alignment)
- * epoch  : collecting the fixed number of groups that follow a header
+ * epoch  : reading the blocks that follow a header; each block is checked and fed
+ *          to the decoder as soon as its last group arrives
  * A beacon (uniform W/R frames with black separators) can arrive at any time and
  * (re)configures the receiver.
  */
@@ -91,7 +95,7 @@ export class Receiver {
   decoder: LTDecoder | null = null;
   done = false;
   stats: ReceiverStats = {
-    observed: 0, parsed: 0, unparsed: 0, lostFrames: 0, headers: 0, epochs: 0, chunksAdded: 0, chunksUnknown: 0, beacons: 0, crcFailures: 0,
+    observed: 0, parsed: 0, unparsed: 0, lostFrames: 0, headers: 0, epochs: 0, chunksAdded: 0, chunksUnknown: 0, beacons: 0, blocksLost: 0, blocksBad: 0, crcFailures: 0,
   };
 
   private state: State = 'search';
@@ -99,7 +103,11 @@ export class Receiver {
   private lastSeq: number | null = null;
   private lastT = 0;
   private beaconBits: number[] = [];
-  private epochNeed = 0;
+  private blocksTotal = 0;
+  private blockChunks = 1;
+  private blocksDone = 0;
+  private groupsDone = 0;
+  private epochBitBuf: (number | null)[] = [];
   private headerSyms: number[] = [];
   private copiesLeft = 0;
   configSource: ConfigSource | null = null;
@@ -130,7 +138,7 @@ export class Receiver {
     this.state = 'search';
     this.buf = [];
     this.lastSeq = null;
-    this.epochNeed = 0;
+    this.blocksTotal = 0;
   }
 
   observe(obs: Observation): void {
@@ -348,24 +356,85 @@ export class Receiver {
       this.onHeader(h);
       this.buf = [];
       this.state = 'epoch';
-      this.epochNeed = groupsFor(EPOCH_BITS, k) * GROUP_SYMBOLS;
+      this.blockChunks = PRESETS[this.config!.preset].blockChunks;
+      this.blocksTotal = h.epochChunks / this.blockChunks;
+      this.blocksDone = 0;
+      this.groupsDone = 0;
+      this.epochBitBuf = [];
       // The header we matched may have been an early copy; later copies still to
       // arrive must be recognised and dropped rather than read as payload.
       this.headerSyms = bitsToSymbols(encodeHeader(h), k);
       this.copiesLeft = rep - 1;
     } else {
-      if (this.copiesLeft > 0 && this.buf.length >= this.headerSyms.length) {
+      if (this.copiesLeft > 0) {
         const n = this.headerSyms.length;
+        if (this.buf.length < n) return;
         let consistent = true;
         for (let i = 0; i < n && consistent; i++) if (this.buf[i] !== null && this.buf[i] !== this.headerSyms[i]) consistent = false;
         if (consistent) {
           this.buf.splice(0, n);
           this.copiesLeft--;
+          if (this.copiesLeft > 0) return;
         } else {
           this.copiesLeft = 0;
         }
       }
-      if (this.copiesLeft === 0 && this.buf.length >= this.epochNeed) this.finishEpoch();
+      this.drainEpoch(k);
+    }
+  }
+
+  /** Turn every complete group into bits and every complete block into chunks. */
+  private drainEpoch(k: number): void {
+    const B = blockBits(this.blockChunks);
+    while (this.blocksDone < this.blocksTotal && this.buf.length >= (this.groupsDone + 1) * GROUP_SYMBOLS) {
+      const g = this.buf.slice(this.groupsDone * GROUP_SYMBOLS, (this.groupsDone + 1) * GROUP_SYMBOLS);
+      this.groupsDone++;
+      for (const b of symbolsToBits(g, k)) this.epochBitBuf.push(b);
+      while (this.blocksDone < this.blocksTotal && this.epochBitBuf.length >= (this.blocksDone + 1) * B) {
+        const bits = this.epochBitBuf.slice(this.blocksDone * B, (this.blocksDone + 1) * B);
+        this.finishBlock(bits, this.blocksDone);
+        this.blocksDone++;
+      }
+    }
+    if (this.blocksDone >= this.blocksTotal) {
+      this.stats.epochs++;
+      this.buf = [];
+      this.state = 'search';
+    }
+  }
+
+  private finishBlock(bits: (number | null)[], block: number): void {
+    const h = this.header!;
+    const n = this.blockChunks;
+    const bytes = decodeBlock(bits, n, h.msgId, h.epoch, block);
+    if (!bytes) {
+      if (bits.includes(null)) this.stats.blocksLost++;
+      else this.stats.blocksBad++;
+      this.stats.chunksUnknown += n;
+      return;
+    }
+    if (this.done) return;
+    const dec = this.decoder!;
+    const base = h.epoch * h.epochChunks + block * n;
+    for (let i = 0; i < n; i++) {
+      this.stats.chunksAdded++;
+      dec.add(base + i, bytes[i]);
+    }
+    this.events.onProgress?.(dec.progress, dec.L, dec.received);
+    if (dec.complete) {
+      const bytesOut = dec.result()!;
+      const payload = decodePayload(bytesOut);
+      if (payload) {
+        this.done = true;
+        this.events.onDone?.(payload, bytesOut, h);
+      } else {
+        // A wrong chunk slipped past a block CRC (about 1 in 256 bad blocks) and
+        // poisoned the solve. We can't tell which one, so drop everything for this
+        // message and decode again from the chunks still to come (the sender loops).
+        this.stats.crcFailures++;
+        this.decoder = new LTDecoder(h.length, h.msgId);
+        this.events.onCrcFail?.(bytesOut, h);
+      }
     }
   }
 
@@ -377,44 +446,6 @@ export class Receiver {
     }
     this.header = h;
     this.events.onHeader?.(h);
-  }
-
-  private finishEpoch(): void {
-    const k = PALETTES[this.config!.palette].length;
-    const syms = this.buf.slice(0, this.epochNeed);
-    this.buf = [];
-    this.state = 'search';
-    this.stats.epochs++;
-    const h = this.header!;
-    const bits = symbolsToBits(syms, k).slice(0, EPOCH_BITS);
-    const bytes = bitsToBytes(bits, EPOCH_CHUNKS);
-    const dec = this.decoder!;
-    const base = h.epoch * EPOCH_CHUNKS;
-    for (let i = 0; i < EPOCH_CHUNKS; i++) {
-      const v = bytes[i];
-      if (v === null) {
-        this.stats.chunksUnknown++;
-        continue;
-      }
-      this.stats.chunksAdded++;
-      dec.add(base + i, v);
-    }
-    this.events.onProgress?.(dec.progress, dec.L, dec.received);
-    if (dec.complete && !this.done) {
-      const bytesOut = dec.result()!;
-      const payload = decodePayload(bytesOut);
-      if (payload) {
-        this.done = true;
-        this.events.onDone?.(payload, bytesOut, h);
-      } else {
-        // A misread chunk reached the decoder and poisoned the solve. We can't tell
-        // which one, so drop everything for this message and decode again from the
-        // chunks still to come (the sender loops forever, so they will).
-        this.stats.crcFailures++;
-        this.decoder = new LTDecoder(h.length, h.msgId);
-        this.events.onCrcFail?.(bytesOut, h);
-      }
-    }
   }
 
   private log(obs: Observation, seq: number | null, marker: number | null, lost: number, kind: FrameLog['kind'], symbols: string): void {

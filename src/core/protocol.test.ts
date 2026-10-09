@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Color } from './colors';
-import { type Config, PALETTE_NAMES, PRESET_NAMES, PRESETS, defaultConfig, framePeriodMs } from './config';
+import { type Config, PALETTE_NAMES, PALETTES, PRESET_NAMES, PRESETS, defaultConfig, framePeriodMs } from './config';
 import { Prng } from './prng';
 import { Receiver, FrameAcceptor } from './receiver';
 import { Transmitter, type Frame } from './transmitter';
@@ -114,18 +114,46 @@ describe('end to end', () => {
 });
 
 describe('misread colours', () => {
-  it('a checksum failure resets the decoder and a later pass still decodes', () => {
+  const text = 'Meet at the north gate at 7. Bring the long lens.';
+
+  it('a systematic misread (red seen as green) in one epoch is caught by block CRCs', () => {
     const cfg = defaultConfig('near');
-    const text = 'Meet at the north gate at 7. Bring the long lens.';
-    // In epoch 0, read every red payload cell as green: some groups go out of range
-    // (lost), the rest decode to wrong bytes that the fountain decoder can't detect.
     const corrupt = (f: Frame, cells: Color[]) =>
       f.segment === 'payload' && f.epoch === 0 ? cells.map((c) => (c === Color.R ? Color.G : c)) : cells;
-    let fails = 0;
     const r = run(cfg, text, { corrupt, maxFrames: 5000 });
-    fails = r.rx.stats.crcFailures;
-    expect(fails).toBeGreaterThan(0);
+    expect(r.rx.stats.blocksBad).toBeGreaterThan(0);
     expect(r.doneBytes).toEqual(r.payload);
+  });
+
+  for (const [preset, rate] of [['near', 0.02], ['mid', 0.02], ['far', 0.02]] as const) {
+    it(`${preset}: ${rate * 100}% random colour errors never produce a wrong message`, () => {
+      for (const seed of [1, 2, 3, 4]) {
+        const cfg = defaultConfig(preset);
+        const pal = PALETTES[cfg.palette];
+        const rng = new Prng(1000 + seed);
+        const corrupt = (f: Frame, cells: Color[]) =>
+          f.segment === 'beacon'
+            ? cells
+            : cells.map((c) => (c !== Color.K && rng.next() < rate ? pal[(pal.indexOf(c) + 1 + rng.int(pal.length - 1)) % pal.length] : c));
+        const r = run(cfg, preset === 'far' ? 'ok?' : text, { corrupt, seed, maxFrames: 60000 });
+        expect(r.doneBytes).toEqual(r.payload);
+      }
+    });
+  }
+});
+
+describe('short messages', () => {
+  it('"hi" at Far (W/R, 15 fps) decodes in under 30 s of frames', () => {
+    const cfg = defaultConfig('far');
+    const r = run(cfg, 'hi');
+    expect(r.doneBytes).toEqual(r.payload);
+    expect(r.frames / cfg.fps).toBeLessThan(30);
+  });
+
+  it('a receiver that joins mid-way waits less than one long epoch for a short message', () => {
+    const cfg = defaultConfig('mid');
+    const tx = new Transmitter(cfg, encodePayload({ type: PayloadType.Text, text: 'hi' }));
+    expect(tx.epochChunks).toBe(8);
   });
 });
 

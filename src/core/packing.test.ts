@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { bitsPerGroup, bitsToSymbols, decodeGroup, encodeGroup, symbolsToBits } from './packing';
 import { crc16, crc8 } from './crc';
-import { decodeBeacon, decodeHeader, encodeBeacon, encodeHeader } from './framing';
+import { decodeBeacon, decodeHeader, encodeBeacon, encodeHeader, encodeBlock, decodeBlock } from './framing';
 import { decodePayload, encodePayload, PayloadType } from './payload';
 
 describe('packing', () => {
@@ -33,13 +33,13 @@ describe('packing', () => {
     expect(back.slice(0, bits.length)).toEqual(bits);
   });
 
-  it('marks bits unknown when a group has an unknown symbol', () => {
-    const bits = new Array(28).fill(1);
-    const syms = bitsToSymbols(bits, 4) as (number | null)[];
+  it('k=3: marks the whole group unknown when one symbol is unknown', () => {
+    const bits = new Array(22).fill(1);
+    const syms = bitsToSymbols(bits, 3) as (number | null)[];
     syms[3] = null;
-    const back = symbolsToBits(syms, 4);
-    expect(back.slice(0, 14).every((b) => b === null)).toBe(true);
-    expect(back.slice(14, 28).every((b) => b === 1)).toBe(true);
+    const back = symbolsToBits(syms, 3);
+    expect(back.slice(0, 11).every((b) => b === null)).toBe(true);
+    expect(back.slice(11, 22).every((b) => b === 1)).toBe(true);
   });
 });
 
@@ -62,12 +62,49 @@ describe('framing', () => {
   });
 
   it('header round-trips and rejects corruption', () => {
-    const h = { msgId: 200, length: 4321, epoch: 17, flags: 0 };
+    const h = { msgId: 200, length: 4321, epoch: 17, epochChunks: 32 as const, flags: 0 };
     const bits = encodeHeader(h);
     expect(bits.length).toBe(56);
     expect(decodeHeader(bits)).toEqual(h);
     bits[30] ^= 1;
     expect(decodeHeader(bits)).toBeNull();
+  });
+
+  it('every epoch size survives the header flags', () => {
+    for (const epochChunks of [8, 16, 32, 64] as const) {
+      const h = { msgId: 1, length: 9, epoch: 3, epochChunks, flags: 0 };
+      expect(decodeHeader(encodeHeader(h))).toEqual(h);
+    }
+  });
+
+  it('block round-trips; a flipped bit, wrong index or wrong epoch is rejected', () => {
+    const bytes = [1, 2, 3, 4, 5, 6, 7, 255];
+    const bits = encodeBlock(9, 4, 2, bytes);
+    expect(bits.length).toBe(72);
+    expect(decodeBlock(bits, 8, 9, 4, 2)).toEqual(bytes);
+    expect(decodeBlock(bits, 8, 9, 4, 3)).toBeNull();
+    expect(decodeBlock(bits, 8, 9, 5, 2)).toBeNull();
+    const bad = bits.slice();
+    bad[13] ^= 1;
+    expect(decodeBlock(bad, 8, 9, 4, 2)).toBeNull();
+    const holey: (number | null)[] = bits.slice();
+    holey[40] = null;
+    expect(decodeBlock(holey, 8, 9, 4, 2)).toBeNull();
+  });
+});
+
+describe('symbolsToBits', () => {
+  it('for k=2 and k=4 an unknown symbol blanks only its own bits', () => {
+    for (const k of [2, 4]) {
+      const bits = Array.from({ length: 2 * bitsPerGroup(k) }, (_, i) => (i * 7 + 3) % 5 > 1 ? 1 : 0);
+      const syms: (number | null)[] = bitsToSymbols(bits, k);
+      expect(symbolsToBits(syms, k)).toEqual(bits);
+      syms[3] = null;
+      const out = symbolsToBits(syms, k);
+      const per = Math.log2(k);
+      expect(out.filter((b) => b === null).length).toBe(per);
+      expect(out.slice(0, 3 * per)).toEqual(bits.slice(0, 3 * per));
+    }
   });
 });
 

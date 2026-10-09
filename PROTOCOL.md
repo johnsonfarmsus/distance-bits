@@ -16,25 +16,28 @@ marker. Payload palettes (the "mode" / blue toggle):
 
 Seven symbols are read as a base-k number, most significant first. Values at or
 above 2^bits are never sent; seeing one means a misdecode and the group is dropped.
+For k = 2 and 4 this is plain binary (1 or 2 bits per symbol), so the receiver maps
+each symbol to its own bits and an unknown symbol blanks only those bits. For k = 3
+one unknown symbol blanks the whole group.
 
 ## Presets
 
-| Preset | Grid | Frame layout | Symbols / frame | Marker | Header copies | Default |
-|--------|------|--------------|-----------------|--------|---------------|---------|
-| near   | 2×4  | one black cell walks raster positions 0..7 (position = seq mod 8), the other 7 cells are one group | 7 | position mod 8 | 2 | rgbw, 30 fps |
-| mid    | 1×2  | black cell alternates top/bottom (seq mod 2); the other cell is one symbol | 1 | position mod 2 | 3 | rgbw, 30 fps |
-| far    | 1×1  | frames alternate: one symbol (whole screen), then all black | 0.5 | lit/black = seq mod 2 | 3 | wr, 15 fps |
+| Preset | Grid | Frame layout | Symbols / frame | Marker | Header copies | Chunks / block | Default |
+|--------|------|--------------|-----------------|--------|---------------|----------------|---------|
+| near   | 2×4  | one black cell walks raster positions 0..7 (position = seq mod 8), the other 7 cells are one group | 7 | position mod 8 | 2 | 4 | rgbw, 30 fps |
+| mid    | 1×2  | black cell alternates top/bottom (seq mod 2); the other cell is one symbol | 1 | position mod 2 | 3 | 2 | rgbw, 30 fps |
+| far    | 1×1  | frames alternate: one symbol (whole screen), then all black | 0.5 | lit/black = seq mod 2 | 2 | 2 | wr, 15 fps |
 
 `seq` is the transmitter's monotonic frame counter across everything it sends.
 
 ## Transmission sequence
 
 ```
-epoch 0:  BEACON  HEADER×r  64 chunks
-epoch 1:          HEADER×r  64 chunks
-epoch 2:          HEADER×r  64 chunks
-epoch 3:          HEADER×r  64 chunks
-epoch 4:  BEACON  HEADER×r  64 chunks
+epoch 0:  BEACON  HEADER×r  E chunks in blocks
+epoch 1:          HEADER×r  E chunks in blocks
+epoch 2:          HEADER×r  E chunks in blocks
+epoch 3:          HEADER×r  E chunks in blocks
+epoch 4:  BEACON  HEADER×r  E chunks in blocks
 ...forever, until the sender is stopped.
 ```
 
@@ -49,11 +52,29 @@ sync16 = 0xB5C2 | preset(2) palette(2) fps(2) reserved(2) | crc8(first 3 bytes)
 group encoder (zero-padded to a group boundary), repeated `r` times back-to-back:
 
 ```
-sync8 = 0xD3 | msgId(8) | length(16) | epoch(8) | flags(8) | crc8(first 6 bytes)
+sync8 = 0xD5 | msgId(8) | length(16) | epoch(8) | flags(8) | crc8(first 6 bytes)
+flags: bits 0-1 = epoch size E code (0:8, 1:16, 2:32, 3:64 chunks); bits 2-7 reserved, 0
 ```
 
-**Chunks** — 64 per epoch, one byte each, chunk index `c = epoch·64 + i`. The 512
-bits are packed through the group encoder (zero-padded to a group boundary).
+(Sync was 0xD3 before block checksums were added; old and new builds don't talk.)
+
+**Epoch size** — `E` = the smallest of 8/16/32/64 that is at least 1.5 × payload
+length, capped at 64. Short messages get short epochs, so a late receiver waits less.
+
+**Chunks** — one byte each, chunk index `c = (epoch mod 256)·E + i`. Indices wrap with
+the 8-bit epoch, so after 256 epochs the same chunks repeat (harmless duplicates).
+
+**Blocks** — the epoch's chunks are sent in blocks of `n` (the preset's chunks/block):
+
+```
+n chunk bytes | crc8(msgId, epoch mod 256, blockIndex, the n bytes)
+```
+
+All of an epoch's blocks are packed through the group encoder as one bitstream
+(zero-padded to a group boundary). A block with any unknown bit, or a failed CRC, is
+dropped whole. This turns misread colours into missing chunks, which the fountain
+code handles, instead of wrong chunks, which it can't. Keying the CRC on
+msgId/epoch/index also catches a stream that has slipped by a frame.
 
 ## Fountain code
 
@@ -98,9 +119,10 @@ Max 65535 bytes total.
    unknown symbols.
 5. The symbol stream is searched for a header ending at the current position; the
    `r` header copies are merged (newest copy wins, older copies fill its holes).
-   After a header, any further consistent copies are dropped, then exactly one
-   epoch's worth of groups is collected, unpacked to 64 chunk bytes (a chunk with any
-   unknown bit is skipped), and fed to the decoder. Back to searching.
+   After a header, any further consistent copies are dropped, then the epoch's groups
+   are read one at a time. Each block is checked and fed to the decoder as soon as
+   its last group arrives, so a short message can finish mid-epoch. After the last
+   block, back to searching.
 6. On full decode the container's CRC-16 is checked. If it fails (a misread chunk
    reached the decoder), the decoder is discarded and decoding starts over from the
    chunks that follow; the sender loops, so a clean pass arrives eventually.

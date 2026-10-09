@@ -28,6 +28,8 @@ export interface CaptureRecord {
   t: number;
   rect: Rect | null;
   cells: (Color | null)[] | null;
+  /** Raw per-cell RGB samples as 6-digit hex, '|'-separated (for tuning the classifier from field logs). */
+  rgb?: string;
   accepted: boolean;
   frame?: FrameLog;
 }
@@ -53,6 +55,8 @@ export class RxPipeline {
   accepted = 0;
   log: CaptureRecord[] = [];
   keepLog = true;
+  /** Simulator hook: rewrite classified cells to inject misreads (null = off). */
+  perturb: ((cells: (Color | null)[]) => (Color | null)[]) | null = null;
   private pendingFrame: FrameLog | null = null;
 
   constructor(events: PipelineEvents, opts: PipelineOptions) {
@@ -84,7 +88,9 @@ export class RxPipeline {
       const { cols, rows } = this.receiver.samplingGrid();
       const samples = sampleCells(img, rect, cols, rows);
       this.calibrator.update(samples);
-      const cells = classifyCells(samples, this.calibrator.calib);
+      let cells = classifyCells(samples, this.calibrator.calib);
+      if (this.perturb) cells = this.perturb(cells);
+      rec.rgb = samples.map((v) => v.map((c) => Math.round(c).toString(16).padStart(2, '0')).join('')).join('|');
       this.lastSamples = samples;
       this.lastCells = cells;
       rec.cells = cells;
@@ -119,13 +125,13 @@ export class RxPipeline {
   }
 
   csv(): string {
-    const lines = ['t_ms,rect,cells,accepted,seq,marker,lost,kind,symbols,state'];
+    const lines = ['t_ms,rect,cells,accepted,seq,marker,lost,kind,symbols,state,rgb'];
     for (const r of this.log) {
       const rect = r.rect ? `${r.rect.x}:${r.rect.y}:${r.rect.w}:${r.rect.h}` : '';
       const cells = r.cells ? r.cells.map((c) => (c === null ? '?' : 'KWRGB'[c])).join('') : '';
       const f = r.frame;
       lines.push(
-        [r.t.toFixed(1), rect, cells, r.accepted ? 1 : 0, f?.seq ?? '', f?.marker ?? '', f?.lost ?? '', f?.kind ?? '', f?.symbols ?? '', f?.state ?? ''].join(','),
+        [r.t.toFixed(1), rect, cells, r.accepted ? 1 : 0, f?.seq ?? '', f?.marker ?? '', f?.lost ?? '', f?.kind ?? '', f?.symbols ?? '', f?.state ?? '', r.rgb ?? ''].join(','),
       );
     }
     return lines.join('\n');

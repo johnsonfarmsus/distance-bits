@@ -21,12 +21,17 @@ export interface PresetDef {
   defaultPalette: PaletteName;
   /** How many times the header is repeated back-to-back; the receiver merges copies to fill lost symbols. */
   headerRepeat: number;
+  /**
+   * Chunks per CRC-checked block. One lost or misread symbol drops the whole block,
+   * so presets that carry few bits per frame use small blocks.
+   */
+  blockChunks: number;
 }
 
 export const PRESETS: Record<PresetName, PresetDef> = {
-  near: { cols: 2, rows: 4, markerPeriod: 8, symbolsPerFrame: 7, defaultFps: 30, defaultPalette: 'rgbw', headerRepeat: 2 },
-  mid: { cols: 1, rows: 2, markerPeriod: 2, symbolsPerFrame: 1, defaultFps: 30, defaultPalette: 'rgbw', headerRepeat: 3 },
-  far: { cols: 1, rows: 1, markerPeriod: 2, symbolsPerFrame: 0.5, defaultFps: 15, defaultPalette: 'wr', headerRepeat: 3 },
+  near: { cols: 2, rows: 4, markerPeriod: 8, symbolsPerFrame: 7, defaultFps: 30, defaultPalette: 'rgbw', headerRepeat: 2, blockChunks: 4 },
+  mid: { cols: 1, rows: 2, markerPeriod: 2, symbolsPerFrame: 1, defaultFps: 30, defaultPalette: 'rgbw', headerRepeat: 3, blockChunks: 2 },
+  far: { cols: 1, rows: 1, markerPeriod: 2, symbolsPerFrame: 0.5, defaultFps: 15, defaultPalette: 'wr', headerRepeat: 2, blockChunks: 2 },
 };
 
 /** Payload palettes: symbol index -> physical color. Black is never a payload color. */
@@ -42,9 +47,31 @@ export const FPS_VALUES: Fps[] = [30, 15, 10];
 
 /** Symbols per packing group. Fixed at 7 so a Near frame is exactly one group. */
 export const GROUP_SYMBOLS = 7;
-/** Fountain chunks per epoch; a header precedes every epoch. */
-export const EPOCH_CHUNKS = 64;
-export const EPOCH_BITS = EPOCH_CHUNKS * 8;
+/**
+ * Chunks are sent in blocks (PresetDef.blockChunks per block), each followed by a
+ * CRC-8. A block that fails its CRC (a misread colour) or has a missing symbol is
+ * dropped, so the fountain decoder only ever sees missing chunks, never wrong ones.
+ */
+export function blockBits(blockChunks: number): number {
+  return blockChunks * 8 + 8;
+}
+/** Allowed epoch lengths in chunks (a header precedes every epoch); coded in 2 header-flag bits. */
+export const EPOCH_SIZES = [8, 16, 32, 64] as const;
+export type EpochSize = (typeof EPOCH_SIZES)[number];
+
+/**
+ * Epoch length for an L-byte payload: about 1.5×L so one epoch covers the
+ * systematic pass plus some repair chunks, capped at 64. Short messages get short
+ * epochs, so a receiver that joins late or loses lock waits less for a header.
+ */
+export function epochChunksFor(L: number): EpochSize {
+  for (const e of EPOCH_SIZES) if (e >= Math.ceil(L * 1.5)) return e;
+  return 64;
+}
+
+export function epochBits(epochChunks: number, blockChunks: number): number {
+  return (epochChunks / blockChunks) * blockBits(blockChunks);
+}
 /** A beacon precedes every Nth epoch (the first one always). */
 export const DEFAULT_BEACON_EVERY = 4;
 

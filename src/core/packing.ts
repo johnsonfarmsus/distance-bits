@@ -52,10 +52,26 @@ export function bitsToSymbols(bits: ArrayLike<number>, k: number): number[] {
   return out;
 }
 
-/** Unpack symbols (grouped by 7) into bits; a group with any unknown symbol yields unknown bits. */
+/**
+ * Unpack symbols (grouped by 7) into bits. For k = 2 or 4 each digit maps to its
+ * own 1 or 2 bits (base-k with k a power of two is plain binary), so an unknown
+ * symbol only blanks its own bits. For k = 3 the bits are spread across the whole
+ * group, so one unknown symbol blanks the group.
+ */
 export function symbolsToBits(symbols: ArrayLike<number | null>, k: number): (number | null)[] {
   const b = bitsPerGroup(k);
   const out: (number | null)[] = [];
+  const per = k === 2 ? 1 : k === 4 ? 2 : 0;
+  if (per) {
+    for (let g = 0; g + GROUP_SYMBOLS <= symbols.length; g += GROUP_SYMBOLS) {
+      for (let i = 0; i < GROUP_SYMBOLS; i++) {
+        const d = symbols[g + i];
+        const ok = d !== null && d !== undefined && d >= 0 && d < k;
+        for (let j = per - 1; j >= 0; j--) out.push(ok ? ((d as number) >>> j) & 1 : null);
+      }
+    }
+    return out;
+  }
   for (let g = 0; g + GROUP_SYMBOLS <= symbols.length; g += GROUP_SYMBOLS) {
     const digits: (number | null)[] = [];
     for (let i = 0; i < GROUP_SYMBOLS; i++) digits.push(symbols[g + i]);

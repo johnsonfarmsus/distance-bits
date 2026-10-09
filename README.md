@@ -21,7 +21,7 @@ src/core/      the protocol, pure TypeScript, no browser APIs (unit-tested)
 src/app/       the web app (Vite, vanilla TS)
   send.ts        full-screen transmitter
   receive.ts     camera receiver with live overlay, stats and CSV log
-  sim.ts         in-browser simulator: sweep "screen px" to stand in for distance
+  sim.ts         in-browser simulator: sweep "screen px" to stand in for distance; inject misreads
   pipeline.ts    pixels -> decoder, shared by receive and sim
 ```
 
@@ -53,7 +53,9 @@ workflow in `.github/workflows/deploy.yml` builds and publishes on every push to
    `Locked: message #…`, then the message.
 4. Tap A's screen to stop (there is no return channel in the web version, so the sender
    never stops on its own).
-5. *Download log (CSV)* on B after each run. That file is the experiment.
+5. *Download log (CSV)* on B after each run. That file is the experiment. Its `rgb`
+   column holds the raw colour of every cell in every capture, so the colour
+   classifier can be tuned from real data afterwards.
 
 If auto-detect keeps flipping, switch B to **Manual** and match A's settings.
 
@@ -61,6 +63,8 @@ Then start walking back. Sweep the presets and the blue toggle at each distance
 and keep the CSVs.
 
 ## What's here and what isn't
+
+The sender shows a flashing-light (photosensitivity) warning before the first send.
 
 Working: all three presets, all three palettes (blue on/off is a setting on both the
 sender and, via auto-detect or manual, the receiver), fountain-coded text, small files
@@ -72,8 +76,8 @@ and the corner-finder fallback for bright backgrounds.
 
 ## Known limits
 
-The Far preset is slow by design — about 7.5 bit/s in mono at 15 fps. A short message
-takes a minute or two. The simulator will show you exactly how long before you go
+The Far preset is slow by design — about 7.5 bit/s in mono at 15 fps. "hi" takes
+about 30 s on a clean link; longer messages take minutes. The simulator will show you exactly how long before you go
 outside.
 
 Screen detection is "largest bright blob". Against a bright sky or a lit wall it will
@@ -83,5 +87,5 @@ grab the wrong thing. Dusk is your friend.
 
 `npm run build && npm run preview -- --port 4173` in one terminal, then
 `npm run smoke` in another runs the simulator through real Chromium for the Near and
-Mid presets (`SMOKE_FAR=1` adds Far, which takes ~100 s). Needs
+Mid presets plus a 10% misread run (`SMOKE_FAR=1` adds Far, about 30 s). Needs
 `npx playwright install chromium` once.

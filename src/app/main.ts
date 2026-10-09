@@ -31,6 +31,7 @@ function aboutPage(root: HTMLElement): void {
     h('div', { class: 'card' },
       h('p', {}, 'Two phones, no radios. One screen strobes a color grid; the other phone’s camera reads it. A fountain code means there is no retransmit — the sender loops until the receiver has enough.'),
       h('p', {}, 'Web version limits: the receiver can’t lock exposure or control the flash on iOS, so there is no return channel yet — stop the sender by hand once the receiver shows DONE.'),
+      h('p', {}, 'Safety: the sender’s screen flashes rapidly between bright colours and black, which can trigger seizures in people with photosensitive epilepsy.'),
       h('p', {}, 'Quick start: on the sender, type a message, pick a range preset, tap Send. On the receiver, open Receive, start the camera, aim at the sender’s screen. Download the CSV log after each test run.'),
       h('p', { class: 'muted' }, `Build ${__BUILD_TIME__}`),
     ),

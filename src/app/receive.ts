@@ -152,6 +152,7 @@ export function receivePage(root: HTMLElement): () => void {
       ['epochs', s.epochs],
       ['chunks ok', s.chunksAdded],
       ['chunks lost', s.chunksUnknown],
+      ['blocks bad', s.blocksBad],
       ['decoded', d ? `${d.progress}/${d.L}` : '—'],
       ['calib', `${Math.round(pipeline.calibrator.calib.black)}–${Math.round(pipeline.calibrator.calib.white)}`],
     ];
@@ -174,6 +175,7 @@ export function receivePage(root: HTMLElement): () => void {
     h('h2', {}, 'Settings'),
     h('div', { class: 'row' }, modeSel.el, agreeSel.el, widthSel.el, fpsSel.el),
     manualControls.el,
+    h('p', { class: 'muted' }, 'The sender’s screen flashes rapidly. If you are sensitive to flashing light, look at this screen rather than the sender’s.'),
     h('p', { class: 'muted' }, 'Point the rear camera at the sender so its screen is the brightest thing in view. The yellow box shows where the decoder thinks the screen is. Auto-detect needs a few seconds of clean frames; if it keeps flipping, pick Manual and match the sender.'),
   );
   return () => stop();

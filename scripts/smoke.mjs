@@ -10,7 +10,7 @@ const page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width:
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 
-async function run(preset, palette, px, blur, text, timeoutMs) {
+async function run(preset, palette, px, blur, text, timeoutMs, misreadPct = 0) {
   await page.goto(`${base}#sim`, { waitUntil: 'networkidle' });
   const selects = page.locator('select');
   await selects.nth(0).selectOption(preset);
@@ -18,6 +18,7 @@ async function run(preset, palette, px, blur, text, timeoutMs) {
   const nums = page.locator('input[type=number]');
   await nums.nth(0).fill(String(px));
   await nums.nth(1).fill(String(blur));
+  await nums.nth(5).fill(String(misreadPct));
   await page.locator('textarea').fill(text);
   await page.getByRole('button', { name: 'Run' }).click();
   const start = Date.now();
@@ -29,7 +30,7 @@ async function run(preset, palette, px, blur, text, timeoutMs) {
   }
   const got = await page.locator('.rx-message').innerText();
   const ok = status.startsWith('DONE') && got === text;
-  console.log(`${ok ? 'PASS' : 'FAIL'} ${preset}/${palette} @${px}px blur ${blur}: ${status}`);
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${preset}/${palette} @${px}px blur ${blur}${misreadPct ? ` misread ${misreadPct}%` : ''}: ${status}`);
   return ok;
 }
 
@@ -37,7 +38,8 @@ let ok = true;
 ok &= await run('near', 'rgbw', 24, 1, 'The quick brown fox jumps over the lazy dog', 40000);
 ok &= await run('near', 'rgw', 12, 1, 'near, no blue, 12 px', 40000);
 ok &= await run('mid', 'rgbw', 8, 2, 'mid ok', 60000);
-if (process.env.SMOKE_FAR) ok &= await run('far', 'wr', 6, 1, 'hi', 240000);
+ok &= await run('near', 'rgbw', 24, 1, 'misreads must never reach the screen', 60000, 10);
+if (process.env.SMOKE_FAR) ok &= await run('far', 'wr', 6, 1, 'hi', 120000);
 await browser.close();
 if (errors.length) console.log('page errors:', errors);
 process.exit(ok ? 0 : 1);

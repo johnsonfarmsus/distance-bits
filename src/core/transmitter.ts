@@ -1,10 +1,9 @@
 import { Color } from './colors';
 import type { Config } from './config';
-import { DEFAULT_BEACON_EVERY, EPOCH_CHUNKS, GROUP_SYMBOLS, PALETTES, PRESETS } from './config';
+import { DEFAULT_BEACON_EVERY, GROUP_SYMBOLS, PALETTES, PRESETS, epochBits, epochChunksFor, type EpochSize } from './config';
 import { LTEncoder } from './fountain';
-import { encodeBeacon, encodeHeader } from './framing';
+import { encodeBeacon, encodeBlock, encodeHeader } from './framing';
 import { bitsToSymbols } from './packing';
-import { bytesToBits } from './bits';
 
 /** One screen refresh worth of content. */
 export interface Frame {
@@ -37,6 +36,7 @@ export class Transmitter {
   private encoder: LTEncoder;
   private seq = 0;
   private k: number;
+  readonly epochChunks: EpochSize;
 
   constructor(public readonly cfg: Config, public readonly payload: Uint8Array, opts: TransmitterOptions = {}) {
     if (payload.length === 0 || payload.length > 0xffff) throw new Error('payload must be 1..65535 bytes');
@@ -44,6 +44,7 @@ export class Transmitter {
     this.beaconEvery = Math.max(1, opts.beaconEvery ?? DEFAULT_BEACON_EVERY);
     this.k = PALETTES[cfg.palette].length;
     this.encoder = new LTEncoder(payload, this.msgId);
+    this.epochChunks = epochChunksFor(payload.length);
     this.gen = this.run();
   }
 
@@ -51,23 +52,32 @@ export class Transmitter {
     return this.gen.next().value;
   }
 
-  /** Frames per epoch (header + chunks), for progress/time estimates. */
+  /** Frames per epoch (header copies + blocks), for progress/time estimates. */
   framesPerEpoch(): number {
     const p = PRESETS[this.cfg.preset];
-    const headerSyms = bitsToSymbols(encodeHeader({ msgId: 0, length: 1, epoch: 0, flags: 0 }), this.k).length * p.headerRepeat;
-    const epochSyms = bitsToSymbols(new Array(EPOCH_CHUNKS * 8).fill(0), this.k).length;
+    const headerSyms = bitsToSymbols(encodeHeader({ msgId: 0, length: 1, epoch: 0, epochChunks: this.epochChunks, flags: 0 }), this.k).length * p.headerRepeat;
+    const epochSyms = bitsToSymbols(new Array(epochBits(this.epochChunks, p.blockChunks)).fill(0), this.k).length;
     return (headerSyms + epochSyms) / p.symbolsPerFrame;
   }
 
   private *run(): Generator<Frame, never, void> {
+    const E = this.epochChunks;
+    const n = PRESETS[this.cfg.preset].blockChunks;
     for (let epoch = 0; ; epoch++) {
       if (epoch % this.beaconEvery === 0) yield* this.blobBits(encodeBeacon(this.cfg), 'beacon', epoch);
-      const header = encodeHeader({ msgId: this.msgId, length: this.payload.length, epoch: epoch & 0xff, flags: 0 });
+      // The header carries the epoch mod 256, so chunk indices wrap with it: after
+      // 256 epochs the same chunks repeat, which the decoder treats as duplicates.
+      const e8 = epoch & 0xff;
+      const header = encodeHeader({ msgId: this.msgId, length: this.payload.length, epoch: e8, epochChunks: E, flags: 0 });
       const headerSyms = bitsToSymbols(header, this.k);
       for (let r = 0; r < PRESETS[this.cfg.preset].headerRepeat; r++) yield* this.symbols(headerSyms, 'header', epoch);
-      const bytes = new Uint8Array(EPOCH_CHUNKS);
-      for (let i = 0; i < EPOCH_CHUNKS; i++) bytes[i] = this.encoder.chunk(epoch * EPOCH_CHUNKS + i);
-      yield* this.symbols(bitsToSymbols(bytesToBits(bytes), this.k), 'payload', epoch);
+      const bits: number[] = [];
+      for (let b = 0; b < E / n; b++) {
+        const bytes = new Array<number>(n);
+        for (let i = 0; i < n; i++) bytes[i] = this.encoder.chunk(e8 * E + b * n + i);
+        bits.push(...encodeBlock(this.msgId, e8, b, bytes));
+      }
+      yield* this.symbols(bitsToSymbols(bits, this.k), 'payload', epoch);
     }
   }
 

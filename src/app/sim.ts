@@ -1,4 +1,4 @@
-import { PRESETS, Transmitter, addNoise, boxBlur, defaultConfig, encodePayload, PayloadType, type Config, type Image } from '../core';
+import { Color, PRESETS, Transmitter, addNoise, boxBlur, defaultConfig, encodePayload, PayloadType, type Config, type Image } from '../core';
 import { RxPipeline } from './pipeline';
 import { FrameClock, drawFrame } from './render';
 import { configControls, describeConfig, download, h } from './ui';
@@ -27,6 +27,7 @@ export function simPage(root: HTMLElement): () => void {
   const noise = num('Noise (0–60)', 8, 0, 60, 1);
   const loss = num('Capture loss %', 5, 0, 60, 1);
   const cast = num('Color cast (warm→cool)', 0, -40, 40, 5);
+  const misread = num('Misread frames %', 0, 0, 50, 1);
   const controls = configControls(cfg, (c) => (cfg = c));
 
   const status = h('div', { class: 'card' }, 'idle');
@@ -63,6 +64,16 @@ export function simPage(root: HTMLElement): () => void {
     const capturesPerFrame = Math.max(1, Math.round(60 / cfg.fps));
     clock = new FrameClock(cfg.fps, (now) => {
       const frame = tx.next();
+      // Misread: with the chosen probability, this transmitted frame has one lit colour
+      // consistently read as another (the same in every capture, like a real misread).
+      const LIT = [Color.W, Color.R, Color.G, Color.B];
+      if (Math.random() * 100 < misread.get()) {
+        const from = LIT[Math.floor(Math.random() * 4)];
+        const to = LIT.filter((c) => c !== from)[Math.floor(Math.random() * 3)];
+        pipeline!.perturb = (cells) => cells.map((c) => (c === from ? to : c));
+      } else {
+        pipeline!.perturb = null;
+      }
       drawFrame(txCtx, frame, cfg, txCanvas.width, txCanvas.height);
       // Synthetic camera view: dark room, the screen at the requested pixel size.
       const W = camCanvas.width, H = camCanvas.height;
@@ -100,6 +111,7 @@ export function simPage(root: HTMLElement): () => void {
         ['headers', s.headers],
         ['chunks ok', s.chunksAdded],
         ['chunks lost', s.chunksUnknown],
+        ['blocks bad', s.blocksBad],
         ['decoded', d ? `${d.progress}/${d.L}` : '—'],
         ['elapsed', `${((now - t0) / 1000).toFixed(1)} s`],
       ];
@@ -118,7 +130,7 @@ export function simPage(root: HTMLElement): () => void {
     h('h2', {}, 'Simulator'),
     text,
     controls.el,
-    h('div', { class: 'row' }, screenPx.el, blur.el, noise.el, loss.el, cast.el),
+    h('div', { class: 'row' }, screenPx.el, blur.el, noise.el, loss.el, cast.el, misread.el),
     h('div', { class: 'row' }, h('button', { class: 'primary', click: start }, 'Run'), h('button', { click: stop }, 'Stop'), h('button', { click: () => pipeline && download('sim-log.csv', new Blob([pipeline.csv()], { type: 'text/csv' })) }, 'Download log')),
     h('div', { class: 'sim-canvases' }, h('div', {}, h('div', { class: 'muted' }, 'transmitter'), txCanvas), h('div', {}, h('div', { class: 'muted' }, 'simulated camera'), camCanvas)),
     status,

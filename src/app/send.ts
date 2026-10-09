@@ -1,4 +1,4 @@
-import { PRESETS, Transmitter, bitsPerGroup, defaultConfig, encodePayload, paletteSize, PayloadType, type Config, type Frame, type Payload } from '../core';
+import { PRESETS, Transmitter, defaultConfig, encodePayload, PayloadType, type Config, type Frame, type Payload } from '../core';
 import { FrameClock, drawFrame } from './render';
 import { blobOf, configControls, download, fmtBytes, fmtSeconds, h } from './ui';
 
@@ -16,14 +16,62 @@ function loadCfg(): Config {
 
 /** Rough wall-clock estimate for one full pass of the payload at this config (no losses). */
 export function estimateSeconds(cfg: Config, bytes: number): number {
-  const p = PRESETS[cfg.preset];
-  const k = paletteSize(cfg.palette);
-  const bitsPerFrame = (bitsPerGroup(k) / 7) * p.symbolsPerFrame;
-  const epochs = Math.ceil(bytes / 64);
-  const headerFrames = (Math.ceil(56 / bitsPerGroup(k)) * 7 * p.headerRepeat) / p.symbolsPerFrame;
+  const tx = new Transmitter(cfg, new Uint8Array(Math.max(1, bytes)), { msgId: 0 });
+  const epochs = Math.ceil(bytes / tx.epochChunks);
   const beaconFrames = 64;
-  const frames = epochs * (headerFrames + 512 / bitsPerFrame) + Math.ceil(epochs / 4) * beaconFrames;
+  const frames = epochs * tx.framesPerEpoch() + Math.ceil(epochs / tx.beaconEvery) * beaconFrames;
   return frames / cfg.fps;
+}
+
+const FLASH_OK_KEY = 'distance-bits.flash-warning-ok';
+
+function flashWarningAccepted(): boolean {
+  try {
+    return localStorage.getItem(FLASH_OK_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Photosensitivity warning shown before the first send. Full-screen flashing
+ * between saturated colours and black at 3–30 Hz is a known seizure trigger.
+ */
+function flashWarning(onAccept: () => void): HTMLElement {
+  const remember = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  const close = () => box.remove();
+  const box = h(
+    'div',
+    { class: 'modal' },
+    h(
+      'div',
+      { class: 'modal-card' },
+      h('h3', {}, '⚠ Flashing lights'),
+      h('p', {}, 'Sending makes this screen flash rapidly between bright colours and black. This can trigger seizures in people with photosensitive epilepsy.'),
+      h('p', {}, 'Don’t use it if you or anyone who will see the screen has a history of seizures or is sensitive to flashing light. Stop at once if anyone feels unwell. Tap the screen to stop sending.'),
+      h('label', { class: 'check' }, remember, 'Don’t show this again on this device'),
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { click: close }, 'Cancel'),
+        h('button', {
+          class: 'primary',
+          click: () => {
+            if (remember.checked) {
+              try {
+                localStorage.setItem(FLASH_OK_KEY, '1');
+              } catch {
+                /* private mode: ask again next time */
+              }
+            }
+            close();
+            onAccept();
+          },
+        }, 'I understand, send'),
+      ),
+    ),
+  );
+  return box;
 }
 
 export function sendPage(root: HTMLElement): () => void {
@@ -131,7 +179,10 @@ export function sendPage(root: HTMLElement): () => void {
   }
   screen.addEventListener('click', stop);
 
-  const sendBtn = h('button', { class: 'primary', click: () => start() }, 'Send (full screen)');
+  const sendBtn = h('button', {
+    class: 'primary',
+    click: () => (flashWarningAccepted() ? start() : document.body.append(flashWarning(() => void start()))),
+  }, 'Send (full screen)');
 
   root.append(
     h('h2', {}, 'Message'),
