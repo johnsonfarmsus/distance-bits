@@ -47,6 +47,23 @@ import UIKit
   /// that both clips the colours and blends consecutive frames together.
   static func handleCamera(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any] ?? [:]
+    if call.method == "torch" {
+      // Flashlight on/off for the delivery-confirmation blink (rear torch faces the sender).
+      let on = args["on"] as? Bool ?? false
+      guard let dev = AVCaptureDevice.default(for: .video), dev.hasTorch else {
+        result(FlutterError(code: "no_torch", message: "no torch", details: nil))
+        return
+      }
+      do {
+        try dev.lockForConfiguration()
+        if on { try dev.setTorchModeOn(level: AVCaptureDevice.maxAvailableTorchLevel) } else { dev.torchMode = .off }
+        dev.unlockForConfiguration()
+        result(nil)
+      } catch {
+        result(FlutterError(code: "torch_failed", message: error.localizedDescription, details: nil))
+      }
+      return
+    }
     if call.method == "lenses" {
       // Rear lenses with their field of view, so the app can label zoom steps (1×, 3× …).
       let types: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera, .builtInTelephotoCamera, .builtInUltraWideCamera]

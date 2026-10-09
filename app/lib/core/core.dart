@@ -2,6 +2,7 @@
 /// PROTOCOL.md at the repo root is the spec both implementations follow.
 library;
 
+export 'ack.dart';
 export 'bits.dart';
 export 'colors.dart';
 export 'config.dart';

@@ -36,7 +36,7 @@ class Chat {
       );
 }
 
-enum MsgStatus { sending, sent, received }
+enum MsgStatus { sending, sent, delivered, received }
 
 class Message {
   final String id;
@@ -174,8 +174,9 @@ class ChatStore extends ChangeNotifier {
     return m;
   }
 
-  void markSent(Message m) {
-    m.status = MsgStatus.sent;
+  void markSent(Message m, {bool delivered = false}) {
+    // Once confirmed, a later unconfirmed resend doesn't take the tick away.
+    if (m.status != MsgStatus.delivered) m.status = delivered ? MsgStatus.delivered : MsgStatus.sent;
     _changed();
   }
 

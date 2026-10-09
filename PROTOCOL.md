@@ -122,6 +122,22 @@ that take a while.
 The Flutter app implements this (`app/lib/core/secure.dart`). The web receiver
 recognises the flag and reports encrypted messages as locked.
 
+## Delivery confirmation (return path)
+
+When the receiver decodes a message (including a repeat it already had), it blinks
+its rear flashlight, which faces the sender while listening: on/off every 125 ms
+for 3 s. The sender's front camera faces the receiver from the same side as the
+transmitting screen. While sending, it runs at its shortest shutter and lowest
+ISO, so only a torch seen head-on saturates. The sender declares the message
+delivered after 6 consecutive on/off runs of 85–200 ms from a compact, saturated
+white spot that stays in roughly one place (≤15 % of the frame between blinks).
+It then stops transmitting.
+
+The ack is not tied to a message id; with one sender and one receiver that's
+enough. Without a working torch or front camera the sender simply keeps sending
+until stopped by hand, as before. Implemented in `app/lib/core/ack.dart` (detector),
+`app/lib/ui/ack_flasher.dart` and `app/lib/ui/transmit_screen.dart`.
+
 ## Receiver
 
 1. Vision: find the largest bright blob (max-channel threshold, 25% above mean),

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../chat/store.dart';
 import '../core/core.dart';
 import 'chats_screen.dart' show shortTime;
+import 'ack_flasher.dart';
 import 'listen_panel.dart';
 import 'safety.dart';
 import 'theme.dart';
@@ -66,10 +67,10 @@ class _ChatScreenState extends State<ChatScreen> {
       _composer.clear();
     }
     if (!mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute(
+    final delivered = await Navigator.of(context).push<bool>(MaterialPageRoute(
       builder: (_) => TransmitScreen(transmitter: Transmitter(chat.config, bytes, msgId: msgId, flags: flags)),
     ));
-    _store.markSent(m);
+    _store.markSent(m, delivered: delivered == true);
   }
 
   String? _estimate() {
@@ -110,6 +111,8 @@ class _ChatScreenState extends State<ChatScreen> {
     };
     final added = _store.addIncoming(targetId, text, h.msgId);
     setState(() => _listening = false);
+    // Tell the sender it arrived (also for a repeat, so it stops sending).
+    AckFlasher.blink();
     final messenger = ScaffoldMessenger.of(context);
     if (added == null) {
       messenger.showSnackBar(const SnackBar(content: Text('Got that message already')));
@@ -299,7 +302,12 @@ class _Bubble extends StatelessWidget {
     final out = message.outgoing;
     final meta = [
       shortTime(message.at),
-      if (out) message.status == MsgStatus.sending ? 'Sending…' : 'Sent',
+      if (out)
+        switch (message.status) {
+          MsgStatus.sending => 'Sending…',
+          MsgStatus.delivered => 'Delivered ✓',
+          _ => 'Sent',
+        },
     ].join(' · ');
     return Align(
       alignment: out ? Alignment.centerRight : Alignment.centerLeft,
