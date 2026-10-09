@@ -1,0 +1,166 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'colors.dart';
+
+/// RGBA pixel buffer (same layout as canvas ImageData).
+class RgbaImage {
+  final Uint8List data;
+  final int width, height;
+  RgbaImage(this.data, this.width, this.height);
+}
+
+class ScreenRect {
+  final int x, y, w, h;
+  const ScreenRect(this.x, this.y, this.w, this.h);
+  @override
+  String toString() => '$x:$y:$w:$h';
+}
+
+typedef Rgb = (double, double, double);
+
+/// Find the transmitting screen: the largest bright connected blob (port of vision.ts).
+ScreenRect? findScreen(RgbaImage img, {int minArea = 12}) {
+  final data = img.data, width = img.width, height = img.height;
+  final n = width * height;
+  final v = Uint8List(n);
+  var sum = 0, max = 0;
+  for (var i = 0; i < n; i++) {
+    final r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    final m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    v[i] = m;
+    sum += m;
+    if (m > max) max = m;
+  }
+  final mean = sum / n;
+  if (max - mean < 40) return null;
+  final thr = mean + 0.25 * (max - mean);
+  final label = Int32List(n)..fillRange(0, n, -1);
+  ScreenRect? best;
+  var bestArea = 0;
+  final stack = <int>[];
+  var comp = 0;
+  for (var start = 0; start < n; start++) {
+    if (v[start] < thr || label[start] >= 0) continue;
+    var minX = width, minY = height, maxX = 0, maxY = 0, area = 0;
+    stack.add(start);
+    label[start] = comp;
+    while (stack.isNotEmpty) {
+      final p = stack.removeLast();
+      final x = p % width, y = p ~/ width;
+      area++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (x > 0) _visit(p - 1, v, label, thr, comp, stack);
+      if (x < width - 1) _visit(p + 1, v, label, thr, comp, stack);
+      if (y > 0) _visit(p - width, v, label, thr, comp, stack);
+      if (y < height - 1) _visit(p + width, v, label, thr, comp, stack);
+    }
+    if (area > bestArea) {
+      bestArea = area;
+      best = ScreenRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
+    }
+    comp++;
+  }
+  if (best == null || bestArea < minArea) return null;
+  return best;
+}
+
+void _visit(int q, Uint8List v, Int32List label, double thr, int comp, List<int> stack) {
+  if (label[q] >= 0 || v[q] < thr) return;
+  label[q] = comp;
+  stack.add(q);
+}
+
+/// Union of recent detections, held through black frames.
+class RectTracker {
+  final List<(double, ScreenRect)> _recent = [];
+  double windowMs, holdMs;
+  RectTracker({this.windowMs = 400, this.holdMs = 1500});
+
+  ScreenRect? update(ScreenRect? found, double t) {
+    if (found != null) _recent.add((t, found));
+    _recent.removeWhere((e) => t - e.$1 > holdMs);
+    if (_recent.isEmpty) return null;
+    var use = _recent.where((e) => t - e.$1 <= windowMs).toList();
+    if (use.isEmpty) use = [_recent.last];
+    var x0 = 1 << 30, y0 = 1 << 30, x1 = -(1 << 30), y1 = -(1 << 30);
+    for (final (_, r) in use) {
+      x0 = math.min(x0, r.x);
+      y0 = math.min(y0, r.y);
+      x1 = math.max(x1, r.x + r.w);
+      y1 = math.max(y1, r.y + r.h);
+    }
+    return ScreenRect(x0, y0, x1 - x0, y1 - y0);
+  }
+
+  void reset() => _recent.clear();
+}
+
+/// Average RGB of the central region of each grid cell inside rect (raster order).
+List<Rgb> sampleCells(RgbaImage img, ScreenRect rect, int cols, int rows, {double inset = 0.25}) {
+  final out = <Rgb>[];
+  final cw = rect.w / cols, ch = rect.h / rows;
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      final x0 = (rect.x + c * cw + cw * inset).round();
+      final x1 = math.max(x0 + 1, (rect.x + (c + 1) * cw - cw * inset).round());
+      final y0 = (rect.y + r * ch + ch * inset).round();
+      final y1 = math.max(y0 + 1, (rect.y + (r + 1) * ch - ch * inset).round());
+      var sr = 0, sg = 0, sb = 0, cnt = 0;
+      for (var y = y0; y < y1; y++) {
+        if (y < 0 || y >= img.height) continue;
+        for (var x = x0; x < x1; x++) {
+          if (x < 0 || x >= img.width) continue;
+          final i = (y * img.width + x) * 4;
+          sr += img.data[i];
+          sg += img.data[i + 1];
+          sb += img.data[i + 2];
+          cnt++;
+        }
+      }
+      out.add(cnt > 0 ? (sr / cnt, sg / cnt, sb / cnt) : (0, 0, 0));
+    }
+  }
+  return out;
+}
+
+class Calibration {
+  double white = 200, black = 20;
+}
+
+/// Tracks black and white levels with slow decay so exposure drift is followed.
+class Calibrator {
+  final Calibration calib = Calibration();
+  void update(List<Rgb> samples) {
+    var hi = 0.0, lo = 255.0;
+    for (final (r, g, b) in samples) {
+      final m = math.max(r, math.max(g, b));
+      if (m > hi) hi = m;
+      if (m < lo) lo = m;
+    }
+    calib.white = math.max(hi, calib.white * 0.97);
+    calib.black = math.min(lo, calib.black * 1.03 + 1);
+    if (calib.white - calib.black < 40) calib.white = calib.black + 40;
+  }
+}
+
+/// Classify one cell: darkness by brightest channel, hue by channel shares.
+int? classifyCell(Rgb rgb, Calibration calib, {double blackFrac = 0.35, double whiteMaxShare = 0.45}) {
+  final (r, g, b) = rgb;
+  final m = math.max(r, math.max(g, b));
+  if (m < calib.black + blackFrac * (calib.white - calib.black)) return Col.k;
+  final br = math.max(0.0, r - calib.black), bg = math.max(0.0, g - calib.black), bb = math.max(0.0, b - calib.black);
+  final s = br + bg + bb;
+  if (s <= 0) return null;
+  final nr = br / s, ng = bg / s, nb = bb / s;
+  final top = math.max(nr, math.max(ng, nb));
+  if (top < whiteMaxShare) return Col.w;
+  if (top == nr) return Col.r;
+  if (top == ng) return Col.g;
+  return Col.b;
+}
+
+List<int?> classifyCells(List<Rgb> samples, Calibration calib) => [for (final s in samples) classifyCell(s, calib)];
