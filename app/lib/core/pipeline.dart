@@ -56,8 +56,10 @@ class RxPipeline {
     );
   }
 
-  /// Feed one small captured image (≈160–320 px wide).
-  CaptureRecord process(RgbaImage img, double t) {
+  /// Feed one small captured image (≈160–320 px wide). If [sampler] is given, cell
+  /// colours are read through it (e.g. from a full-resolution buffer) using the
+  /// screen rect found in [img]; otherwise they are read from [img] itself.
+  CaptureRecord process(RgbaImage img, double t, {List<Rgb> Function(ScreenRect rect, int cols, int rows)? sampler}) {
     captures++;
     final rect = tracker.update(findScreen(img), t);
     lastRect = rect;
@@ -65,7 +67,7 @@ class RxPipeline {
     final (cols, rows) = receiver.samplingGrid;
     List<int?> cells;
     if (rect != null) {
-      final samples = sampleCells(img, rect, cols, rows);
+      final samples = sampler != null ? sampler(rect, cols, rows) : sampleCells(img, rect, cols, rows);
       calibrator.update(samples);
       cells = classifyCells(samples, calibrator.calib);
       lastSamples = samples;

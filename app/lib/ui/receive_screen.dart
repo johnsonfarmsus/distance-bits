@@ -9,6 +9,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../core/core.dart';
 import 'image_convert.dart';
+import 'screen_exposure.dart';
 import 'theme.dart';
 
 const _cellColors = [Color(0xFF000000), Color(0xFFFFFFFF), Color(0xFFFF3333), Color(0xFF33FF33), Color(0xFF3355FF)];
@@ -49,9 +50,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   int _snapN = 0;
   String? _sessionStamp;
 
-  // Exposure: meter on the sender's screen, then lock so the camera stops chasing the flashes.
-  int _seenFrames = 0;
-  bool _locked = false, _locking = false;
+  // Exposure steered by the sender's screen brightness (see screen_exposure.dart).
+  ScreenExposure? _exposure;
 
   @override
   void initState() {
@@ -99,7 +99,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       if (_lens >= _backs.length) _lens = 0;
       final cam = CameraController(
         _backs[_lens],
-        ResolutionPreset.medium,
+        ResolutionPreset.high, // 720p: enough pixels for range while keeping 60 fps streaming affordable
         enableAudio: false,
         fps: 60,
         imageFormatGroup: Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
@@ -107,8 +107,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       await cam.initialize();
       await cam.lockCaptureOrientation(DeviceOrientation.portraitUp).catchError((_) {});
       _cam = cam;
-      _locked = false;
-      _seenFrames = 0;
+      await cam.setFocusMode(FocusMode.auto).catchError((_) {});
+      _exposure = ScreenExposure(_backs[_lens].name);
+      await _exposure!.start();
       await cam.startImageStream(_onImage);
       if (mounted) setState(() => _error = null);
     } catch (e) {
@@ -120,6 +121,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     final cam = _cam;
     _cam = null;
     if (cam == null) return;
+    await _exposure?.release();
     try {
       if (cam.value.isStreamingImages) await cam.stopImageStream();
     } catch (_) {}
@@ -136,23 +138,36 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
         if (dt > 0) _capFps = _capFps == 0 ? 1000 / dt : _capFps * 0.95 + (1000 / dt) * 0.05;
       }
       _lastCapT = t;
-      final rgba = toPortraitRgba(img, _backs[_lens].sensorOrientation);
-      if (rgba == null) return;
-      _bufInfo = '${img.width}×${img.height} rot ${_backs[_lens].sensorOrientation}';
+      final frame = CamFrame(img, _backs[_lens].sensorOrientation);
+      if (!frame.supported) return;
+      // Find the screen on a ~240 px wide copy, read colours at full resolution.
+      final step = frame.coarseStep(240);
+      final rgba = frame.coarse(240);
+      _bufInfo = '${img.width}x${img.height} rot ${frame.rot} step $step';
       _lastImg = rgba;
       // Two agreeing captures per frame needs the camera at ~2× the sender's rate;
       // when it can't keep up, accept on a single capture instead.
       final txFps = _pipe.receiver.config?.fps ?? 30;
       _pipe.acceptor.agree = _capFps >= txFps * 1.7 ? 2 : 1;
-      _pipe.process(rgba, t);
+      _pipe.process(rgba, t, sampler: (r, cols, rows) {
+        // Coarse pixel i sits at full-resolution pixel i*step; widen by one step so
+        // the rect covers the whole screen, then shrink back by the cell inset.
+        final full = ScreenRect(r.x * step, r.y * step, r.w * step, r.h * step);
+        return frame.sampleCells(full, cols, rows);
+      });
       _procMs = _procMs * 0.9 + ((_clock.elapsedMicroseconds / 1000.0) - t) * 0.1;
       _rect = _pipe.lastRect;
       _imgW = rgba.width;
       _imgH = rgba.height;
       _cells = _pipe.lastCells;
-      if (_rect != null && !_locked && !_locking) {
-        if (++_seenFrames > 30) _lockExposure();
+      double? brightest;
+      if (_rect != null) {
+        brightest = 0;
+        for (final (r, g, b) in _pipe.lastSamples) {
+          brightest = [brightest!, r, g, b].reduce((a, c) => a > c ? a : c);
+        }
       }
+      _exposure?.update(brightest, t);
       final now = _clock.elapsedMilliseconds;
       if (now - _lastUi > 100 && mounted) {
         _lastUi = now;
@@ -161,35 +176,6 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     } finally {
       _busy = false;
     }
-  }
-
-  Future<void> _lockExposure() async {
-    final cam = _cam, r = _rect;
-    if (cam == null || r == null) return;
-    _locking = true;
-    try {
-      final pt = Offset((r.x + r.w / 2) / _imgW, (r.y + r.h / 2) / _imgH);
-      await cam.setExposurePoint(pt).catchError((_) {});
-      await cam.setFocusPoint(pt).catchError((_) {});
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      await cam.setExposureMode(ExposureMode.locked).catchError((_) {});
-      await cam.setFocusMode(FocusMode.locked).catchError((_) {});
-      _locked = true;
-    } finally {
-      _locking = false;
-    }
-  }
-
-  Future<void> _unlockExposure() async {
-    final cam = _cam;
-    if (cam == null) return;
-    await cam.setExposureMode(ExposureMode.auto).catchError((_) {});
-    await cam.setFocusMode(FocusMode.auto).catchError((_) {});
-    await cam.setExposurePoint(null).catchError((_) {});
-    setState(() {
-      _locked = false;
-      _seenFrames = 0;
-    });
   }
 
   String _stamp() => DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
@@ -219,7 +205,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       await File('${dir.path}/snap-info.txt').writeAsString(
         'last=$name t=${_clock.elapsedMilliseconds} buf=$_bufInfo capFps=${_capFps.toStringAsFixed(1)} '
         'procMs=${_procMs.toStringAsFixed(1)} agree=${_pipe.acceptor.agree} rect=$r cells=${_pipe.lastCells} '
-        'config=${_pipe.receiver.config} locked=$_locked accepted=${_pipe.accepted} headers=${_pipe.receiver.stats.headers}\n',
+        'config=${_pipe.receiver.config} exposure=${_exposure?.label} accepted=${_pipe.accepted} headers=${_pipe.receiver.stats.headers}\n',
         mode: FileMode.append,
       );
     } catch (_) {}
@@ -286,8 +272,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                             CameraPreview(cam),
                             CustomPaint(painter: _OverlayPainter(_rect, _imgW, _imgH)),
                             Positioned(right: 8, top: 8, child: _CellsView(_cells)),
-                            if (_locked)
-                              const Positioned(left: 8, top: 8, child: _Chip(icon: Icons.lock, text: 'Exposure locked')),
+                            if (_exposure != null)
+                              Positioned(left: 8, top: 8, child: _Chip(icon: Icons.camera, text: _exposure!.label)),
                           ]),
                         ),
             ),
@@ -307,16 +293,6 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
               _Stat('${s.blocksBad}', 'bad blocks'),
               _Stat('${s.lostFrames}', 'frames missed'),
               _Stat(_capFps.toStringAsFixed(0), 'camera fps'),
-            ]),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _locked ? _unlockExposure : _lockExposure,
-                  icon: Icon(_locked ? Icons.lock_open : Icons.lock),
-                  label: Text(_locked ? 'Unlock exposure' : 'Lock exposure'),
-                ),
-              ),
             ]),
             if (_backs.length > 1) ...[
               const SizedBox(height: 12),
