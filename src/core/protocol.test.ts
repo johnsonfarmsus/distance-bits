@@ -93,6 +93,21 @@ describe('end to end', () => {
     });
   }
 
+  it('far: a stray sample (box edge on the bezel) in a third of frames still decodes', () => {
+    const cfg = defaultConfig('far');
+    const rng = new Prng(21);
+    // The phone samples a 2×4 grid even in Far; one of the 8 points lands off the screen.
+    const r = run(cfg, 'hi', {
+      corrupt: (_f, cells) => {
+        const eight = new Array<Color>(8).fill(cells[0]);
+        if (rng.next() < 0.33) eight[7] = Color.K;
+        return eight;
+      },
+      maxFrames: 20000,
+    });
+    expect(r.doneBytes).toEqual(r.payload);
+  });
+
   it('receiver joining mid-stream with manual config still decodes', () => {
     const cfg = defaultConfig('near');
     const r = run(cfg, text, { manual: true, skipFrames: 37 });

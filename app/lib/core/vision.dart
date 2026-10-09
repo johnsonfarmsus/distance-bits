@@ -266,6 +266,42 @@ class ScreenFinder {
       }
       comp++;
     }
-    return best;
+    return best == null ? null : _brightCore(img, best);
+  }
+
+  /// The colour-switching patch also covers whatever the screen lights up (a hand,
+  /// a face, a wall), which switches colour in step with it. The screen itself is
+  /// far brighter than any of that, so keep the box around pixels at least half
+  /// as bright as the brightest one. A dark capture (Far's separator, a black
+  /// frame) gives no answer, and the caller keeps the last box.
+  ScreenRect? _brightCore(RgbaImage img, ScreenRect r) {
+    final d = img.data, w = img.width;
+    final x0 = math.max(0, r.x - 1), y0 = math.max(0, r.y - 1);
+    final x1 = math.min(w - 1, r.x + r.w), y1 = math.min(img.height - 1, r.y + r.h);
+    var peak = 0;
+    for (var y = y0; y <= y1; y++) {
+      for (var x = x0; x <= x1; x++) {
+        final i = (y * w + x) * 4;
+        final m = math.max(d[i], math.max(d[i + 1], d[i + 2]));
+        if (m > peak) peak = m;
+      }
+    }
+    if (peak < litLevel) return null;
+    final cut = peak ~/ 2;
+    var minX = x1, minY = y1, maxX = x0, maxY = y0, n = 0;
+    for (var y = y0; y <= y1; y++) {
+      for (var x = x0; x <= x1; x++) {
+        final i = (y * w + x) * 4;
+        if (math.max(d[i], math.max(d[i + 1], d[i + 2])) >= cut) {
+          n++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (n == 0) return null;
+    return ScreenRect(minX, minY, maxX - minX + 1, maxY - minY + 1);
   }
 }

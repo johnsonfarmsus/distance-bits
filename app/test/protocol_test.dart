@@ -19,6 +19,7 @@ List<int> cellsFor(Frame f, Config cfg) {
   double jitterMs = 0,
   double colourErr = 0,
   bool dropBeacons = false,
+  double strayCell = 0,
 }) {
   final payload = encodePayload(Payload.text(text));
   final tx = Transmitter(cfg, payload, msgId: 123);
@@ -40,6 +41,11 @@ List<int> cellsFor(Frame f, Config cfg) {
         for (final c in cells)
           c != Col.k && rng.next() < colourErr ? pal[(pal.indexOf(c) + 1 + rng.nextInt(pal.length - 1)) % pal.length] : c,
       ];
+    }
+    if (strayCell > 0) {
+      // The phone samples a 2×4 grid even in Far; sometimes one point lands off the screen.
+      cells = cells.length == 8 ? List.of(cells) : List.filled(8, cells[0]);
+      if (rng.next() < strayCell) cells[7] = Col.k;
     }
     final t = f.seq * period + (jitterMs > 0 ? (rng.next() * 2 - 1) * jitterMs : 0);
     rx.observe(Observation(t, cells));
@@ -113,6 +119,48 @@ void main() {
     expect(r.bytes, r.payload);
   });
 
+  test('far: a stray sample (box edge on the bezel) in a third of frames still decodes', () {
+    // Field log 8 Oct: Far frames were thrown out whenever one of 8 samples missed the screen.
+    final cfg = defaultConfig(PresetName.far);
+    final r = run(cfg, 'hi', strayCell: 0.33, seed: 21);
+    expect(r.bytes, r.payload);
+  });
+
+  test('screen finder keeps its box on the screen, not on what the screen lights up', () {
+    // Far lights a hand/face in the same colours; that glow switches hue in step
+    // with the screen but is much dimmer.
+    final finder = ScreenFinder();
+    const w = 120, h = 160;
+    ScreenRect? found;
+    final colours = [colorRgb[Col.w], colorRgb[Col.r]];
+    for (var i = 0; i < 30; i++) {
+      final img = RgbaImage(Uint8List(w * h * 4), w, h);
+      for (var p = 0; p < w * h; p++) {
+        img.data[p * 4 + 3] = 255;
+      }
+      final lit = i.isEven; // symbol, then black separator
+      final rgb = colours[(i ~/ 2) % 2];
+      void box(int x0, int y0, int bw, int bh, double k) {
+        for (var y = y0; y < y0 + bh; y++) {
+          for (var x = x0; x < x0 + bw; x++) {
+            final o = (y * w + x) * 4;
+            img.data[o] = (((rgb >> 16) & 0xff) * k).round();
+            img.data[o + 1] = (((rgb >> 8) & 0xff) * k).round();
+            img.data[o + 2] = ((rgb & 0xff) * k).round();
+          }
+        }
+      }
+      if (lit) {
+        box(30, 60, 50, 50, 0.35); // the hand around the phone, lit by it
+        box(48, 70, 14, 28, 0.9); // the screen
+      }
+      found = finder.find(img, i * 66.7) ?? found;
+    }
+    expect(found, isNotNull);
+    expect(found!.x, inInclusiveRange(46, 50), reason: '$found');
+    expect(found.w, inInclusiveRange(12, 18), reason: '$found');
+  });
+
   test('screen finder picks the colour-changing screen over a bigger, brighter, flickering lamp', () {
     // Field test 8 Oct (hallway): ceiling lights outshine the phone, and the old
     // "largest bright blob" locked onto them.
@@ -149,7 +197,8 @@ void main() {
           img.data[o + 2] = ((rgb & 0xff) * 0.7).round();
         }
       }
-      found = finder.find(img, i * 33.3);
+      // A dark capture (black separator) gives no box; the receiver keeps the last one.
+      found = finder.find(img, i * 33.3) ?? found;
     }
     expect(found, isNotNull);
     expect(found!.y, greaterThanOrEqualTo(95), reason: 'found $found, expected the screen at 50,100 14x28');

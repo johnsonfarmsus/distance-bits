@@ -151,7 +151,10 @@ export class Receiver {
 
   observe(obs: Observation): void {
     this.stats.observed++;
-    const uniform = uniformColor(obs.cells);
+    // In Far, whole-screen frames count as uniform when 3/4 of the samples agree.
+    // Elsewhere (and before the mode is known) stay strict: a Near frame can have
+    // 6 of 8 cells the same colour by chance, and would be mistaken for Far.
+    const uniform = this.config?.preset === 'far' ? majorityColor(obs.cells) : uniformColor(obs.cells);
     if (this.configSource !== 'manual' && this.configSource !== 'beacon') this.autoDetect(obs, uniform);
     obs = { t: obs.t, cells: this.reduceCells(obs.cells) };
     if (uniform !== undefined) {
@@ -184,10 +187,12 @@ export class Receiver {
     if (!cfg) return cells;
     const want = PRESETS[cfg.preset].cols * PRESETS[cfg.preset].rows;
     if (cells.length === want) return cells;
-    if (cfg.preset === 'far') return [uniformColor(cells) ?? null];
+    // Whole-screen (Far) and half-screen (Mid) colours tolerate a stray sample,
+    // e.g. a grid point that lands on the bezel: 3 of every 4 points must agree.
+    if (cfg.preset === 'far') return [majorityColor(cells) ?? null];
     if (cfg.preset === 'mid' && cells.length % 2 === 0) {
       const half = cells.length / 2;
-      return [uniformColor(cells.slice(0, half)) ?? null, uniformColor(cells.slice(half)) ?? null];
+      return [majorityColor(cells.slice(0, half)) ?? null, majorityColor(cells.slice(half)) ?? null];
     }
     return cells;
   }
@@ -475,6 +480,14 @@ export class Receiver {
   private log(obs: Observation, seq: number | null, marker: number | null, lost: number, kind: FrameLog['kind'], symbols: string): void {
     this.events.onFrame?.({ t: obs.t, seq, marker, lost, kind, symbols, state: this.state });
   }
+}
+
+/** The colour at least 3/4 of the cells agree on, else undefined. */
+export function majorityColor(cells: (Color | null)[]): Color | undefined {
+  const counts = new Map<Color, number>();
+  for (const c of cells) if (c !== null) counts.set(c, (counts.get(c) ?? 0) + 1);
+  for (const [c, n] of counts) if (n * 4 >= cells.length * 3) return c;
+  return undefined;
 }
 
 /** Returns the common color if every cell is the same non-null color, else undefined. */

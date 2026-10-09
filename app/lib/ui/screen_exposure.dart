@@ -19,6 +19,7 @@ class ScreenExposure {
   double _lastAdjust = -1e9;
   double _lastSeenScreen = 0;
   int _sweep = 0;
+  final List<(double, double)> _recent = [];
 
   ScreenExposure(this.cameraId);
 
@@ -57,8 +58,21 @@ class ScreenExposure {
 
   /// Call once per capture. [brightest] = highest channel value among the screen's
   /// cells (null when no screen is in view); [tMs] = capture time.
-  void update(double? brightest, double tMs) {
-    if (!available || tMs - _lastAdjust < 250) return;
+  void update(double? brightest0, double tMs) {
+    if (!available) return;
+    // Steer by the brightest reading over the last half second: Far's black
+    // separators and Mid's black half would otherwise read as "too dark" and make
+    // exposure see-saw. A dark capture with the screen in view says nothing.
+    double? brightest;
+    if (brightest0 != null) {
+      if (brightest0 >= 40) _recent.add((tMs, brightest0));
+      _recent.removeWhere((e) => tMs - e.$1 > 500);
+      brightest = _recent.isEmpty ? null : _recent.map((e) => e.$2).reduce(math.max);
+      if (brightest == null) return;
+    } else {
+      _recent.clear();
+    }
+    if (tMs - _lastAdjust < 250) return;
     if (brightest == null) {
       // No screen in view: step through a few moderate settings (a phone screen
       // at 1/1000 s needs roughly ISO 100–800). Never climb to the maximum: that
@@ -84,6 +98,7 @@ class ScreenExposure {
       return; // in the comfortable band
     }
     _lastAdjust = tMs;
+    _recent.clear(); // judge the new setting on fresh readings
     var nIso = iso * factor;
     if (nIso < minIso) {
       // Out of ISO headroom: shorten the shutter instead.

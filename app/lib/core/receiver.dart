@@ -51,6 +51,19 @@ const int _autoMin = 6;
 const int _colorWindow = 240;
 const int _colorMin = 3;
 
+/// The colour at least 3/4 of the cells agree on (null if none does).
+int? majorityColor(List<int?> cells) {
+  if (cells.isEmpty) return null;
+  final counts = <int, int>{};
+  for (final c in cells) {
+    if (c != null) counts[c] = (counts[c] ?? 0) + 1;
+  }
+  for (final e in counts.entries) {
+    if (e.value * 4 >= cells.length * 3) return e.key;
+  }
+  return null;
+}
+
 /// Returns the common color if every cell is the same non-null color, else null.
 int? uniformColor(List<int?> cells) {
   if (cells.isEmpty || cells[0] == null) return null;
@@ -136,7 +149,10 @@ class Receiver {
 
   void observe(Observation obs0) {
     stats.observed++;
-    final uniform = uniformColor(obs0.cells);
+    // In Far, whole-screen frames count as uniform when 3/4 of the samples agree.
+    // Elsewhere (and before the mode is known) stay strict: a Near frame can have
+    // 6 of 8 cells the same colour by chance, and would be mistaken for Far.
+    final uniform = config?.preset == PresetName.far ? majorityColor(obs0.cells) : uniformColor(obs0.cells);
     if (configSource != ConfigSource.manual && configSource != ConfigSource.beacon) _autoDetect(obs0, uniform);
     final obs = Observation(obs0.t, _reduceCells(obs0.cells));
     if (uniform != null) {
@@ -172,10 +188,12 @@ class Receiver {
     if (cfg == null) return cells;
     final p = presets[cfg.preset]!;
     if (cells.length == p.cols * p.rows) return cells;
-    if (cfg.preset == PresetName.far) return [uniformColor(cells)];
+    // Whole-screen (Far) and half-screen (Mid) colours tolerate a stray sample,
+    // e.g. a grid point that lands on the bezel: 3 of every 4 points must agree.
+    if (cfg.preset == PresetName.far) return [majorityColor(cells)];
     if (cfg.preset == PresetName.mid && cells.length % 2 == 0) {
       final half = cells.length ~/ 2;
-      return [uniformColor(cells.sublist(0, half)), uniformColor(cells.sublist(half))];
+      return [majorityColor(cells.sublist(0, half)), majorityColor(cells.sublist(half))];
     }
     return cells;
   }
