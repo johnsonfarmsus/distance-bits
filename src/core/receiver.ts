@@ -2,7 +2,7 @@ import { Color } from './colors';
 import type { Config, Fps, PaletteName, PresetName } from './config';
 import { FPS_VALUES, blockBits, GROUP_SYMBOLS, PALETTES, PRESETS, framePeriodMs, symbolOf } from './config';
 import { LTDecoder } from './fountain';
-import { BEACON_BITS, HEADER_BITS, decodeBeacon, decodeBlock, decodeHeader, encodeHeader, type Header } from './framing';
+import { BEACON_BITS, FLAG_ENCRYPTED, HEADER_BITS, decodeBeacon, decodeBlock, decodeHeader, encodeHeader, type Header } from './framing';
 import { bitsToSymbols, groupsFor, symbolsToBits } from './packing';
 import { decodePayload, type Payload } from './payload';
 
@@ -21,6 +21,8 @@ export interface ReceiverEvents {
   onDone?(payload: Payload, bytes: Uint8Array, h: Header): void;
   /** The fountain decode completed but the payload CRC failed; the receiver has reset and keeps listening. */
   onCrcFail?(bytes: Uint8Array, h: Header): void;
+  /** An encrypted message decoded; this receiver can't open it (no key here). */
+  onLocked?(bytes: Uint8Array, h: Header): void;
   onFrame?(entry: FrameLog): void;
 }
 
@@ -437,6 +439,13 @@ export class Receiver {
     this.events.onProgress?.(dec.progress, dec.L, dec.received);
     if (dec.complete) {
       const bytesOut = dec.result()!;
+      if (h.flags & FLAG_ENCRYPTED) {
+        // Encryption is implemented in the Flutter app (app/lib/core/secure.dart);
+        // the web receiver reports the message as locked.
+        this.done = true;
+        this.events.onLocked?.(bytesOut, h);
+        return;
+      }
       const payload = decodePayload(bytesOut);
       if (payload) {
         this.done = true;

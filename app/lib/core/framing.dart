@@ -6,13 +6,16 @@ import 'crc.dart';
 //   sync16 = 0xB5C2 | preset(2) palette(2) fps(2) reserved(2) | crc8 over 3 bytes
 // Header (56 bits, session grid + palette, once per epoch):
 //   sync8 = 0xD5 | msgId(8) | length(16) | epoch(8) | flags(8) | crc8 over 6 bytes
-//   flags: bits 0-1 = epoch size code (8/16/32/64), bits 2-7 reserved
+//   flags: bits 0-1 = epoch size code (8/16/32/64), bit 7 = encrypted, bits 2-6 reserved
 // Block: n chunk bytes | crc8(msgId, epoch, blockIndex, the n bytes)
 
 const int beaconSync = 0xb5c2;
 const int beaconBits = 32;
 const int headerSync = 0xd5;
 const int headerBits = 56;
+
+/// Header flag: the fountain-coded bytes are nonce | AES-CTR(container) (see secure.dart).
+const int flagEncrypted = 0x80;
 
 List<int> encodeBeacon(Config cfg) {
   final w = BitWriter();

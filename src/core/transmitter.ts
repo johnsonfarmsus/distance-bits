@@ -21,6 +21,8 @@ export interface Frame {
 export interface TransmitterOptions {
   msgId?: number;
   beaconEvery?: number;
+  /** Header flag bits other than the epoch size (e.g. FLAG_ENCRYPTED). */
+  flags?: number;
 }
 
 /**
@@ -32,6 +34,7 @@ export interface TransmitterOptions {
 export class Transmitter {
   readonly msgId: number;
   readonly beaconEvery: number;
+  readonly flags: number;
   private gen: Generator<Frame, never, void>;
   private encoder: LTEncoder;
   private seq = 0;
@@ -42,6 +45,7 @@ export class Transmitter {
     if (payload.length === 0 || payload.length > 0xffff) throw new Error('payload must be 1..65535 bytes');
     this.msgId = opts.msgId ?? Math.floor(Math.random() * 256);
     this.beaconEvery = Math.max(1, opts.beaconEvery ?? DEFAULT_BEACON_EVERY);
+    this.flags = opts.flags ?? 0;
     this.k = PALETTES[cfg.palette].length;
     this.encoder = new LTEncoder(payload, this.msgId);
     this.epochChunks = epochChunksFor(payload.length);
@@ -68,7 +72,7 @@ export class Transmitter {
       // The header carries the epoch mod 256, so chunk indices wrap with it: after
       // 256 epochs the same chunks repeat, which the decoder treats as duplicates.
       const e8 = epoch & 0xff;
-      const header = encodeHeader({ msgId: this.msgId, length: this.payload.length, epoch: e8, epochChunks: E, flags: 0 });
+      const header = encodeHeader({ msgId: this.msgId, length: this.payload.length, epoch: e8, epochChunks: E, flags: this.flags });
       const headerSyms = bitsToSymbols(header, this.k);
       for (let r = 0; r < PRESETS[this.cfg.preset].headerRepeat; r++) yield* this.symbols(headerSyms, 'header', epoch);
       const bits: number[] = [];

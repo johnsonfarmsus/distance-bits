@@ -34,8 +34,11 @@ class ReceiverEvents {
 
   /// Decode completed but the payload CRC failed; the receiver reset and keeps listening.
   final void Function(Uint8List bytes, Header h)? onCrcFail;
+
+  /// An encrypted message decoded but couldn't be opened: no key, or a different code.
+  final void Function(Uint8List bytes, Header h)? onLocked;
   final void Function(FrameLog entry)? onFrame;
-  const ReceiverEvents({this.onConfig, this.onHeader, this.onProgress, this.onDone, this.onCrcFail, this.onFrame});
+  const ReceiverEvents({this.onConfig, this.onHeader, this.onProgress, this.onDone, this.onCrcFail, this.onLocked, this.onFrame});
 }
 
 class ReceiverStats {
@@ -92,6 +95,11 @@ class Receiver {
   ConfigSource? configSource;
   final ReceiverEvents events;
 
+  /// Turns decoded wire bytes into a payload container: decrypts when the header
+  /// says encrypted (null = can't). Without one, encrypted messages are reported
+  /// through [ReceiverEvents.onLocked].
+  Uint8List? Function(Uint8List wire, Header h)? unwrap;
+
   bool _searching = true;
   List<int?> _buf = [];
   int? _lastSeq;
@@ -108,7 +116,7 @@ class Receiver {
   bool _confirmed = false;
   final List<int> _colorHistory = [];
 
-  Receiver({this.events = const ReceiverEvents(), Config? manualConfig}) {
+  Receiver({this.events = const ReceiverEvents(), Config? manualConfig, this.unwrap}) {
     if (manualConfig != null) setConfig(manualConfig, ConfigSource.manual);
   }
 
@@ -428,10 +436,17 @@ class Receiver {
     events.onProgress?.call(dec.progress, dec.L, dec.received);
     if (dec.complete) {
       final out = dec.result()!;
-      final payload = decodePayload(out);
+      final encrypted = h.flags & flagEncrypted != 0;
+      final container = encrypted ? unwrap?.call(out, h) : out;
+      final payload = container == null ? null : decodePayload(container);
       if (payload != null) {
         done = true;
         events.onDone?.call(payload, out, h);
+      } else if (encrypted) {
+        // Most likely a message under a different code (block CRCs make a corrupt
+        // decode rare). Report it once and ignore the rest of this message.
+        done = true;
+        events.onLocked?.call(out, h);
       } else {
         stats.crcFailures++;
         decoder = LTDecoder(h.length, h.msgId);

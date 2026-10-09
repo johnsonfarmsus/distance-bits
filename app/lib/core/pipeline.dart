@@ -39,9 +39,12 @@ class RxPipeline {
     void Function(int, int, int)? onProgress,
     void Function(Payload, Uint8List, Header)? onDone,
     void Function(Uint8List, Header)? onCrcFail,
+    void Function(Uint8List, Header)? onLocked,
+    Uint8List? Function(Uint8List, Header)? unwrap,
   }) : acceptor = FrameAcceptor(agree) {
     receiver = Receiver(
       manualConfig: manualConfig,
+      unwrap: unwrap,
       events: ReceiverEvents(
         onConfig: (c, s) {
           acceptor.reset();
@@ -51,6 +54,7 @@ class RxPipeline {
         onProgress: onProgress,
         onDone: onDone,
         onCrcFail: onCrcFail,
+        onLocked: onLocked,
         onFrame: (f) => _pending = f,
       ),
     );

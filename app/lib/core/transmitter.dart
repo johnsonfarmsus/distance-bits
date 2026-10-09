@@ -30,13 +30,16 @@ class Transmitter {
   final Uint8List payload;
   final int msgId;
   final int beaconEvery;
+
+  /// Header flag bits other than the epoch size (e.g. [flagEncrypted]).
+  final int flags;
   late final int epochChunks;
   late final LTEncoder _encoder;
   late final int _k;
   late final Iterator<Frame> _it;
   int _seq = 0;
 
-  Transmitter(this.cfg, this.payload, {required this.msgId, this.beaconEvery = defaultBeaconEvery}) {
+  Transmitter(this.cfg, this.payload, {required this.msgId, this.beaconEvery = defaultBeaconEvery, this.flags = 0}) {
     if (payload.isEmpty || payload.length > 0xffff) throw ArgumentError('payload must be 1..65535 bytes');
     _k = palettes[cfg.palette]!.length;
     _encoder = LTEncoder(payload, msgId);
@@ -71,7 +74,7 @@ class Transmitter {
     for (var epoch = 0;; epoch++) {
       if (epoch % beaconEvery == 0) yield* _blobBits(encodeBeacon(cfg), Segment.beacon, epoch);
       final e8 = epoch & 0xff;
-      final header = encodeHeader(Header(msgId: msgId, length: payload.length, epoch: e8, epochChunks: e));
+      final header = encodeHeader(Header(msgId: msgId, length: payload.length, epoch: e8, epochChunks: e, flags: flags));
       final headerSyms = bitsToSymbols(header, _k);
       for (var r = 0; r < p.headerRepeat; r++) {
         yield* _symbols(headerSyms, Segment.header, epoch);

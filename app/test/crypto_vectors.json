@@ -1,0 +1,27 @@
+{
+ "salt": "distance-bits/v1",
+ "iterations": 50000,
+ "cases": [
+  {
+   "code": "K7Q",
+   "nonce": "01020304",
+   "plaintext": "68656c6c6f206163726f737320746865206669656c64",
+   "key": "e1af60744be7b6132ab1a67a3b45c411",
+   "ciphertext": "49c6b51a5aca238b2d21acc8e5e54db4fa17f012977a"
+  },
+  {
+   "code": "ABC",
+   "nonce": "deadbeef",
+   "plaintext": "78",
+   "key": "bf0a1c13739c43afed2b4301fae0681f",
+   "ciphertext": "cd"
+  },
+  {
+   "code": "9Z0",
+   "nonce": "00000000",
+   "plaintext": "41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141",
+   "key": "55154b3bf66249bf665e85d7f01ca003",
+   "ciphertext": "dab8abcffc8f49f3c91dd15d2630deed17efa38f331348a2ccd60664105f0ba593b6a2aa18e868869220bebf9ff052e6f95704b6853d523e4f63209e79ece9352725f63b5ce8"
+  }
+ ]
+}

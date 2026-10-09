@@ -53,7 +53,7 @@ group encoder (zero-padded to a group boundary), repeated `r` times back-to-back
 
 ```
 sync8 = 0xD5 | msgId(8) | length(16) | epoch(8) | flags(8) | crc8(first 6 bytes)
-flags: bits 0-1 = epoch size E code (0:8, 1:16, 2:32, 3:64 chunks); bits 2-7 reserved, 0
+flags: bits 0-1 = epoch size E code (0:8, 1:16, 2:32, 3:64 chunks); bit 7 = encrypted; bits 2-6 reserved, 0
 ```
 
 (Sync was 0xD3 before block checksums were added; old and new builds don't talk.)
@@ -97,6 +97,30 @@ type(1) | crc16(body)(2) | body
 ```
 
 Max 65535 bytes total.
+
+## Encryption (chat codes)
+
+Optional, per chat. Two people agree a 3-character code (A–Z, 0–9, case-insensitive).
+When header flag bit 7 is set, the fountain-coded bytes are:
+
+```
+nonce(4, random per message) | AES-128-CTR(key, iv = nonce ‖ 0x00×12)(payload container)
+key = PBKDF2-HMAC-SHA256(password = code (upper-case, UTF-8), salt = "distance-bits/v1",
+                         iterations = 50 000, length = 16 bytes)
+```
+
+The receiver decrypts with its chat's key and checks the container's CRC-16: a
+failure means a different code (or, rarely, a corrupt decode), and the message is
+reported as locked rather than shown. Known-answer vectors from Node's crypto are
+in `app/test/crypto_vectors.json`.
+
+Threat model: stops a nearby onlooker running the same app from reading along. It
+does not prove who sent a message, and with only 46 656 possible codes a determined
+attacker with a recording can brute-force it; the slow key derivation only makes
+that take a while.
+
+The Flutter app implements this (`app/lib/core/secure.dart`). The web receiver
+recognises the flag and reports encrypted messages as locked.
 
 ## Receiver
 

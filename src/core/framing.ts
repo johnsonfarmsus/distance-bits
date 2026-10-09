@@ -9,7 +9,7 @@ import { EPOCH_SIZES, FPS_VALUES, PALETTE_NAMES, PRESET_NAMES } from './config';
  *
  * Header (56 bits, sent in the session's grid + palette, once per epoch):
  *   sync8 = 0xD5 | msgId(8) | length(16) | epoch(8) | flags(8) | crc8 over the 6 preceding bytes
- *   flags: bits 0-1 = epoch size code (8/16/32/64 chunks), bits 2-7 reserved (0)
+ *   flags: bits 0-1 = epoch size code (8/16/32/64 chunks), bit 7 = encrypted, bits 2-6 reserved (0)
  *
  * Block (n = the preset's blockChunks; epochChunks/n blocks per epoch):
  *   n chunk bytes | crc8(msgId, epoch, blockIndex, the n bytes)
@@ -20,6 +20,8 @@ export const BEACON_SYNC = 0xb5c2;
 export const BEACON_BITS = 32;
 export const HEADER_SYNC = 0xd5;
 export const HEADER_BITS = 56;
+/** Header flag: the fountain-coded bytes are nonce | AES-128-CTR(container); see PROTOCOL.md. */
+export const FLAG_ENCRYPTED = 0x80;
 
 export function encodeBeacon(cfg: Config): number[] {
   const w = new BitWriter();

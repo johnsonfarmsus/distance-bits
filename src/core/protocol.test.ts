@@ -155,6 +155,22 @@ describe('misread colours', () => {
   }
 });
 
+describe('encrypted messages', () => {
+  it('the web receiver reports an encrypted message as locked, never as text', () => {
+    const cfg = defaultConfig('near');
+    const wire = Uint8Array.from([1, 2, 3, 4, ...encodePayload({ type: PayloadType.Text, text: 'secret' })]);
+    const tx = new Transmitter(cfg, wire, { msgId: 9, flags: 0x80 });
+    let locked = false, shown = false;
+    const rx = new Receiver({ onLocked: () => (locked = true), onDone: () => (shown = true) });
+    for (let i = 0; i < 3000 && !locked; i++) {
+      const f = tx.next();
+      rx.observe({ t: f.seq * framePeriodMs(cfg.fps), cells: cellsFor(f, cfg) });
+    }
+    expect(locked).toBe(true);
+    expect(shown).toBe(false);
+  });
+});
+
 describe('short messages', () => {
   it('"hi" at Far (W/R, 15 fps) decodes in under 30 s of frames', () => {
     const cfg = defaultConfig('far');

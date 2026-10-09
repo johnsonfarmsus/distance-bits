@@ -13,5 +13,6 @@ export 'payload.dart';
 export 'pipeline.dart';
 export 'prng.dart';
 export 'receiver.dart';
+export 'secure.dart';
 export 'transmitter.dart';
 export 'vision.dart';
