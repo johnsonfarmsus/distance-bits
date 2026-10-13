@@ -2,6 +2,7 @@
   "name": "distance-bits",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "description": "Phone-to-phone text over light: screen strobes a color grid, camera reads it, fountain code fixes the rest.",
   "type": "module",
   "scripts": {

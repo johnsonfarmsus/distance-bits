@@ -1,5 +1,11 @@
 # Light-Comm: Phone-to-Phone Text Over Light
 
+> The original design document for what became Distance Bits, written before the
+> first line of code. It's kept for the reasoning and the prior-art survey. Several
+> parts have since changed (the native app replaced the browser-only plan; the
+> uplink is a simple flashlight blink; the receiver finds the screen by colour
+> changes). [`PROTOCOL.md`](PROTOCOL.md) describes what is actually built.
+
 ---
 
 ## 1. Overview

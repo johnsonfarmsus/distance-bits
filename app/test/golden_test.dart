@@ -39,7 +39,7 @@ void main() {
       final frames = s['frames'] as List;
       for (var i = 0; i < frames.length; i++) {
         final f = tx.next();
-        expect('${f.layout.name[0]}${f.segment.name[0]}${f.epoch}:${f.cells.join()}', frames[i], reason: '${cfg} "${(s['text'] as String).substring(0, 2)}" frame $i');
+        expect('${f.layout.name[0]}${f.segment.name[0]}${f.epoch}:${f.cells.join()}', frames[i], reason: '$cfg "${(s['text'] as String).substring(0, 2)}" frame $i');
       }
     }
   });

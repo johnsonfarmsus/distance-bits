@@ -1,16 +1,18 @@
-# distance_bits
+# Distance Bits app (Flutter)
 
-Text over light, phone to phone
+The iPhone app. See the [project README](../README.md) for what it is, how to build
+it, and the state of things; [`PROTOCOL.md`](../PROTOCOL.md) for the protocol.
 
-## Getting Started
+```
+flutter pub get
+flutter test                 # unit tests
+flutter run --release        # on a connected phone (set your signing team in Xcode first)
+```
 
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+- `lib/core/`: protocol and vision (pure Dart, no Flutter imports)
+- `lib/chat/`: chats, history, settings
+- `lib/ui/`: screens
+- `ios/Runner/AppDelegate.swift`: native channels for camera exposure, lens
+  info, screen brightness and torch
+- `test/`: protocol, crypto, ack-detector and vision tests; `fixtures/` holds real
+  camera frames from field tests

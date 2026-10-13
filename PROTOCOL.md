@@ -1,7 +1,10 @@
 # distance-bits wire protocol (as implemented)
 
-This is the authoritative description of what `src/core` does. `DESIGN.md` is the
-reasoning; where the two differ, this file wins.
+This is the authoritative description of what the code does: `src/core`
+(TypeScript reference) and `app/lib/core` (the Dart port the app runs, checked
+against the TypeScript by golden vectors). `DESIGN.md` is the original reasoning;
+where the two differ, this file wins. Where the app's receiver goes further than
+the web one (screen finding, exposure), that's noted below.
 
 ## Colors and cells
 
@@ -140,29 +143,57 @@ until stopped by hand, as before. Implemented in `app/lib/core/ack.dart` (detect
 
 ## Receiver
 
-1. Vision: find the largest bright blob (max-channel threshold, 25% above mean),
-   track its bbox as the union of the last 400 ms of detections (held 1.5 s through
-   black frames), sample the center 50% of each cell in a 2×4 grid, classify each
-   cell against a running black/white calibration: black if max channel is below 35%
-   of the span, otherwise white if no channel share exceeds 45%, otherwise the
-   dominant channel.
-2. Accept a frame when two consecutive captures classify identically and differ
-   from the last accepted frame (the marker moves every frame, so consecutive
-   transmitted frames are never identical).
-3. Configuration, in priority order: manual > beacon > auto. Auto infers the preset
-   from frame structure (uniform → far; halves uniform with one black → mid; exactly
-   one black cell → near) over a 12-frame window, the palette from which colors have
-   been seen (sticky: upgrades on 3 sightings in 240 frames, downgrades only after a
-   full window without), and the frame rate from accepted-frame timing.
-4. Frame counting: each parsed frame's marker gives `seq mod M`; capture timing gives
-   the number of elapsed frames; the two are reconciled and any gap is filled with
-   unknown symbols.
-5. The symbol stream is searched for a header ending at the current position; the
-   `r` header copies are merged (newest copy wins, older copies fill its holes).
-   After a header, any further consistent copies are dropped, then the epoch's groups
-   are read one at a time. Each block is checked and fed to the decoder as soon as
-   its last group arrives, so a short message can finish mid-epoch. After the last
-   block, back to searching.
-6. On full decode the container's CRC-16 is checked. If it fails (a misread chunk
-   reached the decoder), the decoder is discarded and decoding starts over from the
-   chunks that follow; the sender loops, so a clean pass arrives eventually.
+1. **Finding the screen** (app: `ScreenFinder` in `vision.dart`). The camera runs
+   at 120 fps (60 if unavailable) at 720p with a fixed 1/1000 s shutter; ISO is
+   steered so the brightest cell sits near 205/255. The screen is located on a
+   ~240 px-wide subsampled copy of each frame by what makes it unusual: its colour
+   keeps changing. Each pixel accumulates how much its hue jumps between lit
+   captures (fading with a 0.5 s time constant), and the most active connected
+   patch is the screen. Lamps and windows are bright but don't change hue. The box
+   reported is the connected bright region around that patch (pixels at least 60%
+   of the peak and no more than 90 levels below it). Through runs of one colour
+   (no hue changes) it keeps following the last box for up to 4 s. A new box is
+   accepted only if it's at least 12 coarse pixels, overlaps the previous box and
+   is between 0.25× and 2.5× its area. A box that is only a band across the
+   previous one (a capture taken while the display was refreshing) is answered
+   with the whole previous box. If boxes keep being rejected for over a second
+   while the screen is clearly switching colour, the finder starts over.
+   The web receiver uses the simpler "largest bright blob" (25% above mean).
+2. **Tracking and sampling.** The box is the union of the last 400 ms of
+   detections, held 1.5 s through black frames. Colours are read at full camera
+   resolution from the centre 50% of each cell of a 2×4 grid. In Far mode only the
+   middle half of the box is read, since the colour is the same everywhere on the
+   screen and the box can be off by a pixel or so. Each sample is classified
+   against a running black/white calibration: black if its brightest channel is
+   below 35% of the span; otherwise white if no channel share exceeds 45%;
+   otherwise the dominant channel.
+3. **Accepting frames.** A frame is accepted when two consecutive captures agree
+   (one, if the camera runs at less than 1.7× the transmit rate) and differ from
+   the last accepted frame. In Far mode "agree" compares the screen's majority
+   colour (3 of 4 samples), not the raw samples, so a box shifting mid-symbol
+   can't make one symbol count twice; captures without a clear majority are
+   skipped.
+4. **Configuration**, in priority order: manual > beacon > auto. Auto infers the
+   preset from frame structure (uniform → far; halves uniform with one black →
+   mid; exactly one black cell → near) over a 12-frame window. The palette comes
+   from which colours have been seen (sticky: upgrades on 3 sightings in 240
+   frames, downgrades only after a full window without). The frame rate comes from
+   the lower quartile of accepted-frame spacing. Once a valid header has been read
+   the preset and palette are confirmed and auto-detection only refines the frame
+   rate.
+5. **Frame counting.** Each parsed frame's marker gives `seq mod M`; capture timing
+   gives the number of elapsed frames; the two are reconciled and any gap is
+   filled with unknown symbols.
+6. **Decoding.** The symbol stream is searched for a header ending at the current
+   position; the `r` header copies are merged (newest copy wins, older copies fill
+   its holes). After a header, any further consistent copies are dropped, then the
+   epoch's groups are read one at a time. Each block is checked and fed to the
+   decoder as soon as its last group arrives, so a short message can finish
+   mid-epoch. After the last block, back to searching.
+7. **Completion.** On full decode the container's CRC-16 is checked. For an
+   encrypted message the app first tries each of its chat keys; if none gives a
+   valid CRC the message is reported once as locked (sent under a code this phone
+   doesn't have) and the rest of it is ignored. For an unencrypted message a
+   failed CRC means a misread chunk got through: the decoder is discarded and
+   decoding starts over from the chunks that follow. The sender loops, so a clean
+   pass arrives eventually.

@@ -52,8 +52,8 @@ class Header {
   const Header({required this.msgId, required this.length, required this.epoch, required this.epochChunks, this.flags = 0});
 
   @override
-  bool operator ==(Object o) =>
-      o is Header && o.msgId == msgId && o.length == length && o.epoch == epoch && o.epochChunks == epochChunks && o.flags == flags;
+  bool operator ==(Object other) =>
+      other is Header && other.msgId == msgId && other.length == length && other.epoch == epoch && other.epochChunks == epochChunks && other.flags == flags;
   @override
   int get hashCode => Object.hash(msgId, length, epoch, epochChunks, flags);
 }

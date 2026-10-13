@@ -41,13 +41,13 @@ class AckDetector {
     var on = spot != null;
     if (on && _cx != null) {
       // The torch shouldn't jump around between blinks (allow hand movement).
-      final dx = (spot!.$1 - _cx!).abs() / img.width, dy = (spot.$2 - _cy!).abs() / img.height;
+      final dx = (spot.$1 - _cx!).abs() / img.width, dy = (spot.$2 - _cy!).abs() / img.height;
       if (dx > 0.15 || dy > 0.15) {
         _goodRuns = 0;
       }
     }
     if (on) {
-      _cx = spot!.$1;
+      _cx = spot.$1;
       _cy = spot.$2;
     }
     if (_runStart < 0) {

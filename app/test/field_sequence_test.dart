@@ -68,6 +68,6 @@ void main() {
         }
       }
     }
-    expect(good, greaterThanOrEqualTo((lit * 0.9).round()), reason: 'screen ${x0},${y0} ${x1 - x0 + 1}x${y1 - y0 + 1}; misses: ${[for (var i = 0; i < bad.length; i += 6) bad[i]].join(' | ')}');
+    expect(good, greaterThanOrEqualTo((lit * 0.9).round()), reason: 'screen $x0,$y0 ${x1 - x0 + 1}x${y1 - y0 + 1}; misses: ${[for (var i = 0; i < bad.length; i += 6) bad[i]].join(' | ')}');
   });
 }

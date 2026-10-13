@@ -1,113 +1,135 @@
-# distance-bits
+# Distance Bits
 
-Phone-to-phone text over light. One phone's screen strobes a color grid; the other
-phone's rear camera reads it. A fountain code means there is no retransmit: the
-sender loops until the receiver has enough. Range is a first-class setting — the
-grid gets coarser (and slower) as the distance goes up.
+Phone-to-phone text over light. One phone's screen flashes a grid of colours; the
+other phone's camera reads it. No Wi‑Fi, Bluetooth, cell signal or pairing: if you
+can see the other phone, you can text it.
 
-`DESIGN.md` is the design writeup. `PROTOCOL.md` is what the code actually does
-where the two differ.
+It is an experiment, and it works, slowly. Messages decode reliably at a few metres
+indoors. Longer range is the open problem, and the reason this repo is public.
 
-## Layout
+## Status (October 2026)
+
+| | |
+|---|---|
+| **iPhone app** (`app/`, Flutter) | Working: texting-style chats, encrypted chats per 3-character code, an Open channel, delivery confirmation by flashlight. Tested on an iPhone 12 Pro and 14 Pro. |
+| **Android** | Builds from the same code but untested. The camera exposure, brightness and torch controls are native iOS code with no Android version yet. |
+| **Web app** (`src/`, TypeScript) | The original prototype, kept as the reference protocol implementation and an in-browser simulator. It can send and receive, with no delivery confirmation and no encryption. |
+
+Measured so far:
+
+- **Near** (2×4 grid, four colours): reliable at roughly 1.5–3 m.
+- **Mid** (two cells, three colours): works, at shorter range than expected.
+- **Far** (whole screen, two colours): decoded at arm's length. It is slow by
+  design: about 7.5 bits/s, so "Oh" takes about 30 s. A simulation built from that
+  run (`app/test/range_sim_test.dart`) predicts several metres with the phone held
+  still. Hand movement is the limit it points to; that is still to be checked in
+  the field.
+
+## How it works
+
+The sender loops the message as a **fountain code**: there is no "resend", the
+receiver just keeps watching until it has enough pieces. A walking black cell (or,
+in Far mode, a black frame between symbols) acts as the clock. The receiver finds
+the screen by what makes it unusual (its colour keeps changing, unlike lamps and
+windows), reads the cell colours, and reassembles the message. When it succeeds it
+blinks its flashlight, and the sender's front camera watches for that to stop
+sending.
+
+- [`PROTOCOL.md`](PROTOCOL.md): the wire format and receiver, as implemented.
+- [`DESIGN.md`](DESIGN.md): the original design reasoning, with prior art (some of
+  it has since been superseded; `PROTOCOL.md` wins).
+- [`SECURITY.md`](SECURITY.md) and [`PRIVACY.md`](PRIVACY.md): what the chat codes
+  protect against (and what they don't), and what the app stores.
+
+## Try it
+
+**iPhone:** there's no App Store or TestFlight build yet. To build it yourself you
+need a Mac with Xcode, Flutter 3.32+, and an Apple developer account (a free one
+works for your own phones):
 
 ```
-src/core/      the protocol, pure TypeScript, no browser APIs (unit-tested)
-  fountain.ts    systematic LT fountain code (peeling + GF(2) elimination fallback)
-  packing.ts     7 symbols of k colors -> 7 / 11 / 14 bits
-  framing.ts     beacon + header encode/decode
-  transmitter.ts payload -> endless frame sequence with the walking black marker
-  receiver.ts    frames -> symbols -> chunks -> decoder; auto-detects the sender's config
-  vision.ts      find the screen, sample cells, classify colors, simulator helpers
-src/app/       the web app (Vite, vanilla TS)
-  send.ts        full-screen transmitter
-  receive.ts     camera receiver with live overlay, stats and CSV log
-  sim.ts         in-browser simulator: sweep "screen px" to stand in for distance; inject misreads
-  pipeline.ts    pixels -> decoder, shared by receive and sim
+cd app
+flutter pub get
+open ios/Runner.xcworkspace   # set your signing team and a unique bundle id
+flutter run --release         # with the phone connected
 ```
 
-## Run it
+**Using it:** both people create a chat with the same 3-character code (agree it in
+person). One types and taps send, then holds the screen toward the other phone; the
+other taps **Listen** and points the camera at it. Turn the sender's brightness up.
+It works best with the phones steady and the screen the brightest thing in view.
+
+> **Photosensitivity warning:** the sending screen flashes rapidly, which can trigger
+> seizures in people with photosensitive epilepsy.
+
+**Browser:** the web prototype runs on any phone with a camera over HTTPS. See
+[Web prototype](#web-prototype) below.
+
+## Repository layout
 
 ```
-npm install
-npm run dev        # https://<your-mac-ip>:5173  (self-signed cert; accept it once on each phone)
-npm test           # unit tests
+app/                 Flutter app (iOS; Android untested)
+  lib/core/            protocol and vision, pure Dart (a port of src/core)
+  lib/chat/            chat list, history and settings storage
+  lib/ui/              screens: chats, chat, send, listen
+  ios/Runner/          native camera/brightness/torch channels (AppDelegate.swift)
+  test/                unit tests, golden vectors, real-frame fixtures, range simulation
+src/core/            reference protocol in TypeScript (fountain code, framing, receiver, vision)
+src/app/             web prototype: sender, receiver, simulator
+test-data/           a real receive log used as a regression test
+scripts/             Mac helpers: app.sh (test/build/install), smoke.mjs (headless web check)
+```
+
+## Development
+
+```
+npm install && npm test          # TypeScript protocol tests
+cd app && flutter test           # Dart tests (protocol, crypto, vision on real frames)
+```
+
+The Dart core is checked against vectors generated by the TypeScript core
+(`app/test/golden.json`). After any protocol change, regenerate them:
+`GEN_GOLDEN=1 npx vitest run src/core/golden.gen.test.ts`.
+
+`scripts/app.sh test|build|install` runs the Flutter steps from a copy outside
+`~/Documents`, because iCloud Drive adds file attributes that break code signing.
+`install` puts a release build on every iPhone connected by cable.
+
+The range simulation prints a table of screen size × hand movement vs. decode
+success (about 5 minutes):
+
+```
+cd app && flutter test test/range_sim_test.dart --dart-define=RANGE_TABLE=1
+```
+
+### Field testing
+
+Turn on **Settings › Save field-test diagnostics** on the receiving phone. Each
+Listen session then saves a per-capture CSV log, periodic snapshots and short frame
+bursts to the app's folder (Files › On My iPhone › Distance Bits, or
+`xcrun devicectl device copy from … --domain-type appDataContainer`). Most fixes in
+the history were found by replaying these against the code. Note the snapshots are
+pictures of whatever the camera was pointed at.
+
+### Web prototype
+
+```
+npm run dev        # https://<your-computer-ip>:5173 (self-signed cert; accept it on each phone)
 npm run build      # production build in dist/
 ```
 
-Camera access needs HTTPS, which is why the dev server uses a self-signed
-certificate. On each iPhone, open the `https://192.168.x.x:5173` address the dev
-server prints, accept the certificate warning, then allow camera access.
+Pushes to `main` publish the web app to GitHub Pages
+(`.github/workflows/deploy.yml`). The simulator page sweeps "screen pixels" to
+stand in for distance. `npm run smoke` runs it headless in Chromium (after
+`npm run build && npm run preview -- --port 4173`, and
+`npx playwright install chromium` once).
 
-For a hosted copy: push to GitHub, enable Pages (source: GitHub Actions), and the
-workflow in `.github/workflows/deploy.yml` builds and publishes on every push to
-`main`. Add it to the home screen on the phones to get a full-screen PWA.
+## Contributing
 
-## First test with two iPhones
+Issues and pull requests are welcome, especially field logs from new distances,
+lighting and phones, and an Android port of the native camera controls. If you
+send logs, check the snapshots first: they are camera pictures.
 
-1. Phone A: open **Send**, type a short message, leave the preset on **Near**, tap
-   *Send*. Brightness all the way up, auto-lock off. Hold it upright, screen toward B.
-2. Phone B: open **Receive**, *Start camera*, aim so A's screen is the brightest thing
-   in view. The yellow box should hug the screen; the "Live cells" swatch should look
-   like A's grid.
-3. Within a few seconds B should show `Config auto: near · rgbw · 30 fps`, then
-   `Locked: message #…`, then the message.
-4. Tap A's screen to stop (there is no return channel in the web version, so the sender
-   never stops on its own).
-5. *Download log (CSV)* on B after each run. That file is the experiment. Its `rgb`
-   column holds the raw colour of every cell in every capture, so the colour
-   classifier can be tuned from real data afterwards.
+## License
 
-If auto-detect keeps flipping, switch B to **Manual** and match A's settings.
-
-Then start walking back. Sweep the presets and the blue toggle at each distance
-and keep the CSVs.
-
-## What's here and what isn't
-
-The sender shows a flashing-light (photosensitivity) warning before the first send.
-
-Working: all three presets, all three palettes (blue on/off is a setting on both the
-sender and, via auto-detect or manual, the receiver), fountain-coded text, small files
-and JPEG-compressed images, per-frame CSV logging, the simulator.
-
-Not yet: the flash return channel (iOS Safari can't drive the torch; needs a native
-shell), exposure lock on iOS, 180° orientation recovery (hold both phones upright),
-and the corner-finder fallback for bright backgrounds.
-
-## Known limits
-
-The Far preset is slow by design — about 7.5 bit/s in mono at 15 fps. "hi" takes
-about 30 s on a clean link; longer messages take minutes. The simulator will show you exactly how long before you go
-outside.
-
-Screen detection is "largest bright blob". Against a bright sky or a lit wall it will
-grab the wrong thing. Dusk is your friend.
-
-## The iPhone / Android app (Flutter)
-
-`app/` is the native app. Its protocol core (`app/lib/core/`) is a Dart port of
-`src/core/`, checked against vectors generated by the TypeScript code
-(`app/test/golden.json`; regenerate with
-`GEN_GOLDEN=1 npx vitest run src/core/golden.gen.test.ts` after any protocol change).
-
-On the Mac, with phones connected by cable:
-
-```
-scripts/app.sh test      # Dart unit tests
-scripts/app.sh install   # release build, install + launch on every connected iPhone
-```
-
-The script builds from a mirror in `~/.flutter-builds/distance-bits`, because iCloud
-(which syncs ~/Documents) adds file attributes that break code signing.
-
-The first launch of a newly signed app needs the phone online once, to verify the
-developer certificate. After that it runs offline.
-
-Receive logs are saved to Files › On My iPhone › Distance Bits.
-
-## Headless check
-
-`npm run build && npm run preview -- --port 4173` in one terminal, then
-`npm run smoke` in another runs the simulator through real Chromium for the Near and
-Mid presets plus a 10% misread run (`SMOKE_FAR=1` adds Far, about 30 s). Needs
-`npx playwright install chromium` once.
+[GNU Affero General Public License v3.0](LICENSE). © 2026 Trevor Johnson.
