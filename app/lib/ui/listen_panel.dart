@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../chat/store.dart';
 import '../core/core.dart';
 import 'image_convert.dart';
 import 'screen_exposure.dart';
@@ -177,7 +178,7 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
       final rgba = frame.coarse(240);
       _bufInfo = '${img.width}x${img.height} rot ${frame.rot} step $step';
       _lastImg = rgba;
-      if (t >= _nextBurstAt) {
+      if (ChatStore.instance.diagnostics && t >= _nextBurstAt) {
         _burst.add(rgba);
         if (_burst.length >= 24) {
           final frames = List.of(_burst);
@@ -217,6 +218,7 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
   String _stamp() => DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
 
   Future<void> _saveLog() async {
+    if (!ChatStore.instance.diagnostics) return;
     try {
       final dir = await getApplicationDocumentsDirectory();
       _sessionStamp ??= _stamp();
@@ -225,7 +227,7 @@ class _ListenPanelState extends State<ListenPanel> with WidgetsBindingObserver {
   }
 
   Future<void> _saveDiagnostics() async {
-    if (_cam == null) return;
+    if (_cam == null || !ChatStore.instance.diagnostics) return;
     await _saveLog();
     final img = _lastImg;
     if (img == null) return;

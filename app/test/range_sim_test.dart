@@ -7,8 +7,9 @@
 // app's: coarse image (every 3rd pixel of 720×1280) for finding, full-resolution
 // cell sampling (as CamFrame.sampleCells) for reading.
 //
-// Run: flutter test test/range_sim_test.dart   (prints a table; the asserts only
-// pin the arm's-length baseline so the table can't silently stop running)
+// Run: flutter test test/range_sim_test.dart --dart-define=RANGE_TABLE=1
+// (prints a table, ~5 min). Without the define only the arm's-length baseline
+// runs, which pins the simulation to the real run.
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -199,14 +200,9 @@ void main() {
   final bg = loadPpm('test/fixtures/field-2026-10-08-far-s9/dark.ppm');
 
   test('arm\'s-length baseline decodes (matches the real run)', () {
-    final r = run(bg, 219, 'Oh', log: true);
-    File('/tmp/sim-base.csv').writeAsStringSync(r.csv);
-    for (var seed = 1; seed <= 6; seed++) {
-      final q = run(bg, 219, 'Oh', seed: seed);
-      // ignore: avoid_print
-      print('baseline seed $seed: ${q.text} header ${q.headerMs?.round()} done ${q.doneMs?.round()} lit found ${q.litFound}/${q.litFrames} crc ${q.crcFails}');
-    }
+    final r = run(bg, 219, 'Oh');
     expect(r.text, 'Oh');
+    expect(r.doneMs, lessThan(35000)); // the real run: ~30 s from first symbols
   });
 
   test('one case (--dart-define=SIM=size,jitter,text)', () {
@@ -214,13 +210,14 @@ void main() {
     if (spec.isEmpty) return;
     final p = spec.split(',');
     final r = run(bg, double.parse(p[0]), p.sublist(2).join(','), jitter: double.parse(p[1]), seed: double.parse(p[0]).round(), log: true);
-    File('/tmp/sim-case.csv').writeAsStringSync(r.csv);
+    File('${Directory.systemTemp.path}/sim-case.csv').writeAsStringSync(r.csv);
     // ignore: avoid_print
     print('case $spec: ${r.text} header ${r.headerMs?.round()} done ${r.doneMs?.round()} found ${r.litFound}/${r.litFrames} accepted ${r.accepted} crc ${r.crcFails}');
   });
 
   test('range table', () {
-    if (const String.fromEnvironment('SIM').isNotEmpty) return;
+    // Takes ~5 min: only with --dart-define=RANGE_TABLE=1.
+    if (!const bool.fromEnvironment('RANGE_TABLE')) return;
     final rows = <String>['size(px)  ~m@1x  ~m@3x  px/s    text            decoded  header_s  done_s  litFound  crcFails'];
     for (final s in <double>[219, 100, 50, 30, 20, 14, 11, 9, 8, 7, 6, 5]) {
       for (final j in [0.0, 10.0, 40.0]) {

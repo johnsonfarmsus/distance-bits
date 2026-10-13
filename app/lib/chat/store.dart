@@ -66,7 +66,9 @@ const int maxMessagesPerChat = 500;
 
 String _newId() => '${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}${Random().nextInt(1 << 20).toRadixString(36)}';
 
-/// Chats and their history, kept in one JSON file in the app's Documents folder.
+/// Chats, their history and app settings, kept in one JSON file in the app's
+/// private Application Support folder. (Documents is visible in the Files app;
+/// only the optional field-test diagnostics go there.)
 class ChatStore extends ChangeNotifier {
   ChatStore._();
   static final ChatStore instance = ChatStore._();
@@ -78,16 +80,33 @@ class ChatStore extends ChangeNotifier {
   Timer? _saveTimer;
   bool loaded = false;
 
+  /// Save receive logs and camera frames to Documents for field testing. Off by
+  /// default: the frames are pictures of whatever the camera was pointed at.
+  bool diagnostics = false;
+
+  void setDiagnostics(bool on) {
+    diagnostics = on;
+    _changed();
+  }
+
   Future<void> load() async {
     if (loaded) return;
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await getApplicationSupportDirectory();
+    await dir.create(recursive: true);
     _file = File('${dir.path}/chats.json');
+    // Builds before 13 Oct 2026 kept chats.json in Documents (visible in Files).
+    try {
+      final old = File('${(await getApplicationDocumentsDirectory()).path}/chats.json');
+      if (await old.exists() && !await _file!.exists()) await old.copy(_file!.path);
+      if (await old.exists()) await old.delete();
+    } catch (_) {}
     try {
       if (await _file!.exists()) {
         final j = jsonDecode(await _file!.readAsString()) as Map<String, dynamic>;
         for (final c in j['chats'] as List) {
           chats.add(Chat.fromJson(Map<String, dynamic>.from(c as Map)));
         }
+        diagnostics = (j['settings'] as Map?)?['diagnostics'] == true;
         (j['messages'] as Map<String, dynamic>).forEach((k, v) {
           _messages[k] = [for (final m in v as List) Message.fromJson(Map<String, dynamic>.from(m as Map))];
         });
@@ -122,6 +141,7 @@ class ChatStore extends ChangeNotifier {
     final f = _file;
     if (f == null) return;
     final j = {
+      'settings': {'diagnostics': diagnostics},
       'chats': [for (final c in chats) c.toJson()],
       'messages': {for (final e in _messages.entries) e.key: [for (final m in e.value) m.toJson()]},
     };

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../chat/store.dart';
 import '../core/core.dart';
 import 'chat_screen.dart';
+import 'diagnostics.dart';
 import 'theme.dart';
 
 /// Home: every conversation, most recent first, with the Open channel on top.
@@ -22,7 +23,13 @@ class ChatsScreen extends StatelessWidget {
         return Scaffold(
           appBar: AppBar(
             title: const Text('Distance Bits', style: TextStyle(fontWeight: FontWeight.w700)),
-            actions: [IconButton(icon: const Icon(Icons.info_outline), onPressed: () => _about(context))],
+            actions: [
+              IconButton(icon: const Icon(Icons.info_outline), onPressed: () => _about(context)),
+              IconButton(
+                icon: const Icon(Icons.settings_outlined),
+                onPressed: () => showModalBottomSheet<void>(context: context, backgroundColor: kCard, builder: (_) => const SettingsSheet()),
+              ),
+            ],
           ),
           floatingActionButton: FloatingActionButton.extended(
             backgroundColor: kAccent,
@@ -69,6 +76,61 @@ class ChatsScreen extends StatelessWidget {
           'Safety: the sending screen flashes rapidly, which can trigger seizures in people with photosensitive epilepsy.',
         ),
         actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+      ),
+    );
+  }
+}
+
+class SettingsSheet extends StatefulWidget {
+  const SettingsSheet({super.key});
+  @override
+  State<SettingsSheet> createState() => _SettingsSheetState();
+}
+
+class _SettingsSheetState extends State<SettingsSheet> {
+  int? _files;
+
+  @override
+  void initState() {
+    super.initState();
+    _count();
+  }
+
+  Future<void> _count() async {
+    final n = (await diagnosticFiles()).length;
+    if (mounted) setState(() => _files = n);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = ChatStore.instance;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 16, 8, 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+            SwitchListTile(
+              value: store.diagnostics,
+              activeColor: kAccent,
+              title: const Text('Save field-test diagnostics'),
+              subtitle: const Text('While listening, saves receive logs and small camera snapshots to this app\'s folder in the Files app, '
+                  'for troubleshooting. The snapshots show whatever the camera sees. Nothing leaves the phone.'),
+              onChanged: (v) => setState(() => store.setDiagnostics(v)),
+            ),
+            ListTile(
+              enabled: (_files ?? 0) > 0,
+              leading: const Icon(Icons.delete_outline),
+              title: Text(_files == null ? 'Delete saved diagnostics' : 'Delete saved diagnostics ($_files files)'),
+              onTap: () async {
+                await deleteDiagnostics();
+                await _count();
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

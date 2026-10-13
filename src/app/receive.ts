@@ -68,7 +68,10 @@ export function receivePage(root: HTMLElement): () => void {
     if (payload.type === PayloadType.Text) {
       message.append(h('div', {}, payload.text));
     } else if (payload.type === PayloadType.Image) {
-      const url = URL.createObjectURL(blobOf(payload.data, payload.mime));
+      // Only plain raster types: an SVG or HTML "image" opened from its blob URL
+      // would run script on this site's origin.
+      const safe = /^image\/(jpeg|png|gif|webp)$/.test(payload.mime) ? payload.mime : 'application/octet-stream';
+      const url = URL.createObjectURL(blobOf(payload.data, safe));
       message.append(h('img', { src: url, alt: 'received image' }));
     } else {
       message.append(h('div', {}, `File: ${payload.name} (${payload.data.length} bytes)`));
